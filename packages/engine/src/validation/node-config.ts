@@ -8,8 +8,14 @@ const httpRequestConfigSchema = z
   .object({
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
     url: z.string().url(),
+
+    headers: z.record(z.string(), z.string()).optional(),
+
+    body: z.unknown().optional(),
+
+    timeoutMs: z.number().int().min(1000).max(30000).optional(),
   })
-  .passthrough()
+  .strict()
   .superRefine((config, context) => {
     try {
       const parsedUrl = new URL(config.url);
@@ -21,11 +27,43 @@ const httpRequestConfigSchema = z
           message: "URL must use HTTP or HTTPS.",
         });
       }
+
+      if (parsedUrl.username || parsedUrl.password) {
+        context.addIssue({
+          code: "custom",
+          path: ["url"],
+          message: "URL must not contain embedded credentials.",
+        });
+      }
     } catch {
       context.addIssue({
         code: "custom",
         path: ["url"],
         message: "URL must be a valid absolute HTTP or HTTPS URL.",
+      });
+    }
+
+    if (
+      ["GET", "DELETE"].includes(config.method) &&
+      config.body !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["body"],
+        message: `${config.method} requests must not include a body.`,
+      });
+    }
+
+    if (
+      config.body !== undefined &&
+      (config.body === null ||
+        typeof config.body !== "object" ||
+        Array.isArray(config.body))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["body"],
+        message: "Body must be a JSON object.",
       });
     }
   });
