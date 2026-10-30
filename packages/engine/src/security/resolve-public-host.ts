@@ -1,6 +1,11 @@
 import { resolve4, resolve6 } from "node:dns/promises";
 import { isIP } from "node:net";
 
+import {
+  HostResolutionError,
+  InvalidHostnameError,
+  UnsafeHostError,
+} from "./host-errors.js";
 import { isPublicIpAddress } from "./ip-address.js";
 
 export interface PublicHostAddress {
@@ -11,11 +16,11 @@ export interface PublicHostAddress {
 export async function resolvePublicHost(
   hostname: string,
 ): Promise<PublicHostAddress[]> {
-  // Normalize case and remove trailing dots for consistent handling.
+  // Normalize case and remove trailing dots.
   const normalizedHostname = hostname.toLowerCase().replace(/\.+$/, "");
 
   if (!normalizedHostname) {
-    throw new Error("Invalid hostname");
+    throw new InvalidHostnameError();
   }
 
   // IP literals do not require DNS resolution.
@@ -23,13 +28,13 @@ export async function resolvePublicHost(
 
   if (family !== 0) {
     if (!isPublicIpAddress(normalizedHostname)) {
-      throw new Error("Host resolves to a non-public IP address");
+      throw new UnsafeHostError();
     }
 
     return [{ address: normalizedHostname, family: family as 4 | 6 }];
   }
 
-  // Reject malformed DNS names rather than passing them to the resolver.
+  // Reject malformed DNS names before querying DNS.
   if (
     normalizedHostname.length > 253 ||
     normalizedHostname
@@ -41,7 +46,7 @@ export async function resolvePublicHost(
           !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
       )
   ) {
-    throw new Error("Invalid hostname");
+    throw new InvalidHostnameError();
   }
 
   const results = await Promise.allSettled([
@@ -59,24 +64,35 @@ export async function resolvePublicHost(
       for (const address of result.value) {
         addresses.push({ address, family: recordFamily });
       }
+
       continue;
     }
 
     const error = result.reason as NodeJS.ErrnoException;
 
+    // An absent record for one address family is acceptable.
     if (error.code === "ENODATA") {
       continue;
     }
 
-    throw new Error("Failed to resolve hostname", { cause: error });
+    throw new HostResolutionError("Failed to resolve hostname", error);
   }
 
   if (addresses.length === 0) {
-    throw new Error("Hostname resolved to no IP addresses");
+    const cause = Object.assign(
+      new Error("Hostname resolved to no IP addresses"),
+      { code: "ENODATA" },
+    );
+
+    throw new HostResolutionError(
+      "Hostname resolved to no IP addresses",
+      cause,
+    );
   }
 
+  // Reject the entire hostname if ANY returned address is non-public.
   if (addresses.some(({ address }) => !isPublicIpAddress(address))) {
-    throw new Error("Host resolves to a non-public IP address");
+    throw new UnsafeHostError();
   }
 
   return addresses;

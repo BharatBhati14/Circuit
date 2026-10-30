@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
 import { resolve4, resolve6 } from "node:dns/promises";
 
+import {
+  HostResolutionError,
+  InvalidHostnameError,
+  UnsafeHostError,
+} from "./host-errors.js";
 import { resolvePublicHost } from "./resolve-public-host.js";
 
 vi.mock("node:dns/promises", () => ({
@@ -12,23 +16,18 @@ vi.mock("node:dns/promises", () => ({
 const mockResolve4 = vi.mocked(resolve4);
 const mockResolve6 = vi.mocked(resolve6);
 
-function noDataError(): NodeJS.ErrnoException {
-  return Object.assign(new Error("No address records"), {
-    code: "ENODATA",
-  });
+function dnsError(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`DNS error: ${code}`), { code });
 }
 
-function notFoundError(): NodeJS.ErrnoException {
-  return Object.assign(new Error("DNS lookup failed"), {
-    code: "ENOTFOUND",
-  });
+function noDataError(): NodeJS.ErrnoException {
+  return dnsError("ENODATA");
 }
 
 describe("resolvePublicHost", () => {
   beforeEach(() => {
     vi.resetAllMocks();
 
-    // Default: no records for either address family.
     mockResolve4.mockRejectedValue(noDataError());
     mockResolve6.mockRejectedValue(noDataError());
   });
@@ -50,16 +49,16 @@ describe("resolvePublicHost", () => {
   it("rejects a hostname resolving to a private address", async () => {
     mockResolve4.mockResolvedValue(["192.168.1.10"]);
 
-    await expect(resolvePublicHost("internal.example")).rejects.toThrow(
-      "non-public IP address",
+    await expect(resolvePublicHost("internal.example")).rejects.toBeInstanceOf(
+      UnsafeHostError,
     );
   });
 
-  it("rejects mixed public and private results", async () => {
+  it("rejects mixed public and private DNS results", async () => {
     mockResolve4.mockResolvedValue(["8.8.8.8", "10.0.0.1"]);
 
-    await expect(resolvePublicHost("mixed.example")).rejects.toThrow(
-      "non-public IP address",
+    await expect(resolvePublicHost("mixed.example")).rejects.toBeInstanceOf(
+      UnsafeHostError,
     );
   });
 
@@ -81,21 +80,56 @@ describe("resolvePublicHost", () => {
     ]);
   });
 
-  it("rejects when DNS resolution fails", async () => {
+  it("throws HostResolutionError for DNS lookup failures", async () => {
     mockResolve4.mockResolvedValue(["8.8.8.8"]);
-    mockResolve6.mockRejectedValue(notFoundError());
+    mockResolve6.mockRejectedValue(dnsError("ENOTFOUND"));
 
-    await expect(resolvePublicHost("failure.example")).rejects.toThrow(
-      "Failed to resolve hostname",
+    await expect(resolvePublicHost("failure.example")).rejects.toBeInstanceOf(
+      HostResolutionError,
     );
+  });
+
+  it("preserves the original DNS error code", async () => {
+    mockResolve4.mockRejectedValue(dnsError("EAI_AGAIN"));
+
+    try {
+      await resolvePublicHost("temporary-failure.example");
+      throw new Error("Expected DNS resolution to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(HostResolutionError);
+      expect(error).toMatchObject({
+        name: "HostResolutionError",
+        dnsCode: "EAI_AGAIN",
+      });
+      expect((error as Error).cause).toMatchObject({
+        code: "EAI_AGAIN",
+      });
+    }
   });
 
   it("rejects when both DNS lookups return no records", async () => {
     mockResolve4.mockRejectedValue(noDataError());
     mockResolve6.mockRejectedValue(noDataError());
 
-    await expect(resolvePublicHost("empty.example")).rejects.toThrow(
-      "Hostname resolved to no IP addresses",
+    await expect(resolvePublicHost("empty.example")).rejects.toMatchObject({
+      name: "HostResolutionError",
+      dnsCode: "ENODATA",
+      message: "Hostname resolved to no IP addresses",
+    });
+  });
+
+  it("rejects malformed hostnames with InvalidHostnameError", async () => {
+    await expect(resolvePublicHost("invalid..example")).rejects.toBeInstanceOf(
+      InvalidHostnameError,
+    );
+
+    expect(mockResolve4).not.toHaveBeenCalled();
+    expect(mockResolve6).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty hostname", async () => {
+    await expect(resolvePublicHost("")).rejects.toBeInstanceOf(
+      InvalidHostnameError,
     );
   });
 
@@ -108,9 +142,18 @@ describe("resolvePublicHost", () => {
     expect(mockResolve6).not.toHaveBeenCalled();
   });
 
-  it("rejects a private IP literal without DNS lookups", async () => {
-    await expect(resolvePublicHost("192.168.1.1")).rejects.toThrow(
-      "non-public IP address",
+  it("rejects a private IP literal with UnsafeHostError", async () => {
+    await expect(resolvePublicHost("192.168.1.1")).rejects.toBeInstanceOf(
+      UnsafeHostError,
+    );
+
+    expect(mockResolve4).not.toHaveBeenCalled();
+    expect(mockResolve6).not.toHaveBeenCalled();
+  });
+
+  it("rejects IPv4-mapped IPv6 literals", async () => {
+    await expect(resolvePublicHost("::ffff:8.8.8.8")).rejects.toBeInstanceOf(
+      UnsafeHostError,
     );
 
     expect(mockResolve4).not.toHaveBeenCalled();

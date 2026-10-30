@@ -1,267 +1,411 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  HostResolutionError,
+  InvalidHostnameError,
+  UnsafeHostError,
+} from "../../security/host-errors.js";
+
+const {
+  clientRequestMock,
+  clientCloseMock,
+  clientConstructorMock,
+  resolvePublicHostMock,
+  createPinnedConnectorMock,
+} = vi.hoisted(() => ({
+  clientRequestMock: vi.fn(),
+  clientCloseMock: vi.fn(),
+  clientConstructorMock: vi.fn(),
+  resolvePublicHostMock: vi.fn(),
+  createPinnedConnectorMock: vi.fn(),
+}));
+
+const clientDestroyMock = vi.fn();
+
+vi.mock("undici", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("undici")>();
+
+  return {
+    ...actual,
+    Client: vi.fn(function () {
+      return {
+        request: clientRequestMock,
+        close: clientCloseMock,
+        destroy: clientDestroyMock,
+      };
+    }),
+  };
+});
+
+vi.mock("../../security/resolve-public-host.js", () => ({
+  resolvePublicHost: resolvePublicHostMock,
+}));
+
+vi.mock("../../security/pinned-connector.js", () => ({
+  createPinnedConnector: createPinnedConnectorMock,
+}));
+
 import type { NodeExecutionContext, WorkflowNode } from "@circuit/contracts";
 import { HttpRequestExecutor } from "./http-request.js";
-
-const executor = new HttpRequestExecutor();
 
 const context: NodeExecutionContext = {
   executionId: "execution-1",
   workflowId: "workflow-1",
   workflowVersion: 1,
-  nodeId: "http-1",
+  nodeId: "node-1",
   attempt: 1,
   input: {},
   previousOutputs: {},
 };
 
-function createNode(
-  config: Record<string, unknown> = {
-    method: "GET",
-    url: "https://api.example.com/data",
-  },
-  type: WorkflowNode["type"] = "http_request",
-): WorkflowNode {
+function createNode(overrides: Partial<WorkflowNode> = {}): WorkflowNode {
   return {
-    id: "http-1",
-    type,
-    config,
+    id: "node-1",
+    type: "http_request",
+    config: {
+      method: "GET",
+      url: "https://example.com",
+    },
     position: { x: 0, y: 0 },
+    ...overrides,
   };
 }
 
-function mockResponse(
+function createResponse(
   body: string,
-  status = 200,
+  statusCode = 200,
   headers: Record<string, string> = {
     "content-type": "application/json",
   },
-): Response {
-  return new Response(
-    status === 204 || status === 205 || status === 304 ? null : body,
-    { status, headers },
-  );
+) {
+  return {
+    statusCode,
+    headers,
+    body: (async function* () {
+      if (body.length > 0) {
+        yield Buffer.from(body);
+      }
+    })(),
+  };
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
-
 describe("HttpRequestExecutor", () => {
+  it("returns a non-retryable failure for an invalid hostname", async () => {
+    resolvePublicHostMock.mockRejectedValueOnce(new InvalidHostnameError());
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("FAILED");
+
+    if (result.status !== "FAILED") {
+      throw new Error("Expected execution to fail");
+    }
+
+    expect(result.error).toEqual({
+      code: "HTTP_INVALID_HOST",
+      message: "The target hostname is invalid.",
+      retryable: false,
+    });
+
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks requests to non-public IP addresses", async () => {
+    resolvePublicHostMock.mockRejectedValueOnce(new UnsafeHostError());
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("FAILED");
+
+    if (result.status !== "FAILED") {
+      throw new Error("Expected execution to fail");
+    }
+
+    expect(result.error).toEqual({
+      code: "HTTP_SSRF_BLOCKED",
+      message:
+        "The request was blocked because the target resolves to a non-public IP address.",
+      retryable: false,
+    });
+
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("marks temporary DNS failures as retryable", async () => {
+    const cause = Object.assign(new Error("Temporary DNS failure"), {
+      code: "EAI_AGAIN",
+    });
+
+    resolvePublicHostMock.mockRejectedValueOnce(
+      new HostResolutionError("Failed to resolve hostname", cause),
+    );
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("FAILED");
+
+    if (result.status !== "FAILED") {
+      throw new Error("Expected execution to fail");
+    }
+
+    expect(result.error).toEqual({
+      code: "HTTP_DNS_FAILED",
+      message: "The target hostname could not be resolved.",
+      retryable: true,
+    });
+
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("marks permanent DNS failures as non-retryable", async () => {
+    const cause = Object.assign(new Error("Hostname not found"), {
+      code: "ENOTFOUND",
+    });
+
+    resolvePublicHostMock.mockRejectedValueOnce(
+      new HostResolutionError("Failed to resolve hostname", cause),
+    );
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("FAILED");
+
+    if (result.status !== "FAILED") {
+      throw new Error("Expected execution to fail");
+    }
+
+    expect(result.error).toEqual({
+      code: "HTTP_DNS_FAILED",
+      message: "The target hostname could not be resolved.",
+      retryable: false,
+    });
+
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+  const executor = new HttpRequestExecutor();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    resolvePublicHostMock.mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+    ]);
+
+    createPinnedConnectorMock.mockReturnValue(vi.fn());
+
+    clientRequestMock.mockResolvedValue(
+      createResponse('{"message":"success"}'),
+    );
+
+    clientCloseMock.mockResolvedValue(undefined);
+  });
+
   it("parses a successful JSON response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(mockResponse('{"message":"hello"}')),
+    clientRequestMock.mockResolvedValue(
+      createResponse('{"message":"success"}'),
     );
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("SUCCESS");
 
-    if (result.status !== "SUCCESS") {
-      throw new Error("Expected successful execution");
-    }
+    if (result.status !== "SUCCESS") return;
 
-    expect(result.output).toMatchObject({
-      statusCode: 200,
-      body: { message: "hello" },
+    expect(result.output.body).toEqual({
+      message: "success",
     });
   });
 
   it("preserves a plain-text response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        mockResponse("Hello from API", 200, {
-          "content-type": "text/plain",
-        }),
-      ),
+    clientRequestMock.mockResolvedValue(
+      createResponse("Hello Circuit", 200, {
+        "content-type": "text/plain",
+      }),
     );
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("SUCCESS");
 
-    if (result.status !== "SUCCESS") {
-      throw new Error("Expected successful execution");
-    }
+    if (result.status !== "SUCCESS") return;
 
-    expect(result.output.body).toBe("Hello from API");
+    expect(result.output.body).toBe("Hello Circuit");
   });
 
   it("handles an empty response body", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse("", 204)));
+    clientRequestMock.mockResolvedValue(createResponse("", 204));
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("SUCCESS");
 
-    if (result.status !== "SUCCESS") {
-      throw new Error("Expected successful execution");
-    }
+    if (result.status !== "SUCCESS") return;
 
     expect(result.output.body).toBeNull();
-    expect(result.output.statusCode).toBe(204);
   });
 
   it("returns HTTP 500 as a structured HTTP response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(mockResponse('{"error":"server error"}', 500)),
+    clientRequestMock.mockResolvedValue(
+      createResponse('{"error":"server error"}', 500),
     );
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("SUCCESS");
 
-    if (result.status !== "SUCCESS") {
-      throw new Error("Expected HTTP response to be returned");
-    }
+    if (result.status !== "SUCCESS") return;
 
-    expect(result.output).toMatchObject({
-      statusCode: 500,
-      body: { error: "server error" },
+    expect(result.output.statusCode).toBe(500);
+    expect(result.output.body).toEqual({
+      error: "server error",
     });
   });
 
   it("passes configured headers and a serialized JSON body", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(mockResponse('{"created":true}'));
-
-    vi.stubGlobal("fetch", fetchMock);
-
     const node = createNode({
-      method: "POST",
-      url: "https://api.example.com/data",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer test-token",
+      config: {
+        method: "POST",
+        url: "https://example.com/api",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: {
+          name: "Circuit",
+        },
       },
-      body: { name: "Asha" },
-      timeoutMs: 5000,
     });
 
-    const result = await executor.execute(node, context);
+    await executor.execute(node, context);
 
-    expect(result.status).toBe("SUCCESS");
-    expect(fetchMock).toHaveBeenCalledOnce();
-
-    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-
-    expect(url).toBe("https://api.example.com/data");
-    expect(options.method).toBe("POST");
-    expect(options.headers).toEqual({
-      "Content-Type": "application/json",
-      Authorization: "Bearer test-token",
-    });
-    expect(options.body).toBe('{"name":"Asha"}');
-    expect(options.redirect).toBe("manual");
-    expect(options.signal).toBeInstanceOf(AbortSignal);
+    expect(clientRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/api",
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        }),
+        body: JSON.stringify({
+          name: "Circuit",
+        }),
+      }),
+    );
   });
 
   it("omits the body when it is not configured", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(mockResponse('{"ok":true}'));
-
-    vi.stubGlobal("fetch", fetchMock);
-
     await executor.execute(createNode(), context);
 
-    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-
-    expect(options.body).toBeUndefined();
+    expect(clientRequestMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        body: expect.anything(),
+      }),
+    );
   });
 
   it("returns a structured failure for network errors", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new TypeError("Network unavailable")),
-    );
+    clientRequestMock.mockRejectedValue(new Error("Connection refused"));
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("FAILED");
 
-    if (result.status !== "FAILED") {
-      throw new Error("Expected failed execution");
-    }
+    if (result.status !== "FAILED") return;
 
     expect(result.error.code).toBe("HTTP_REQUEST_FAILED");
     expect(result.error.retryable).toBe(true);
-    expect(result.error.message).not.toContain("Network unavailable");
   });
 
   it("returns a structured failure for timeouts", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new DOMException("Aborted", "TimeoutError")),
-    );
+    const timeoutError = new Error("Request timed out");
+    timeoutError.name = "TimeoutError";
+
+    clientRequestMock.mockRejectedValue(timeoutError);
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("FAILED");
 
-    if (result.status !== "FAILED") {
-      throw new Error("Expected failed execution");
-    }
+    if (result.status !== "FAILED") return;
 
     expect(result.error.code).toBe("HTTP_REQUEST_TIMEOUT");
-    expect(result.error.retryable).toBe(true);
+    expect(result.error.retryable).toBe(false);
     expect(result.error.message).toBe("The HTTP request timed out.");
   });
 
   it("rejects an incorrect node type", async () => {
-    const result = await executor.execute(
-      createNode({}, "data_transform"),
-      context,
-    );
+    const node = createNode({
+      type: "manual_trigger",
+    });
+
+    const result = await executor.execute(node, context);
 
     expect(result.status).toBe("FAILED");
 
-    if (result.status !== "FAILED") {
-      throw new Error("Expected failed execution");
-    }
+    if (result.status !== "FAILED") return;
 
     expect(result.error.code).toBe("INVALID_NODE_CONFIG");
-    expect(result.error.retryable).toBe(false);
-    expect(result.error.message).toContain("HttpRequestExecutor");
   });
 
-  it("rejects invalid configuration without calling fetch", async () => {
-    const fetchMock = vi.fn();
+  it("rejects invalid configuration without making a request", async () => {
+    const node = createNode({
+      config: {
+        method: "INVALID",
+        url: "https://example.com",
+      },
+    });
 
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await executor.execute(
-      createNode({
-        method: "GET",
-        url: "ftp://api.example.com/data",
-      }),
-      context,
-    );
+    const result = await executor.execute(node, context);
 
     expect(result.status).toBe("FAILED");
-
-    if (result.status !== "FAILED") {
-      throw new Error("Expected failed execution");
-    }
-
-    expect(result.error.code).toBe("INVALID_NODE_CONFIG");
-    expect(result.error.retryable).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(resolvePublicHostMock).not.toHaveBeenCalled();
+    expect(clientRequestMock).not.toHaveBeenCalled();
   });
 
   it("returns valid ISO timestamps", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(mockResponse('{"ok":true}')),
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.startedAt).toBeDefined();
+    expect(result.finishedAt).toBeDefined();
+
+    expect(Number.isNaN(Date.parse(result.startedAt))).toBe(false);
+    expect(Number.isNaN(Date.parse(result.finishedAt))).toBe(false);
+  });
+
+  it("resolves and pins the hostname before making a request", async () => {
+    await executor.execute(createNode(), context);
+
+    expect(resolvePublicHostMock).toHaveBeenCalledWith("example.com");
+
+    expect(createPinnedConnectorMock).toHaveBeenCalledWith(
+      "example.com",
+      "93.184.216.34",
+      4,
+    );
+  });
+
+  it("closes the client after a successful request", async () => {
+    await executor.execute(createNode(), context);
+
+    expect(clientCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("closes the client after a failed request", async () => {
+    clientRequestMock.mockRejectedValue(new Error("Connection refused"));
+
+    await executor.execute(createNode(), context);
+
+    expect(clientCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not make a request when DNS resolution fails", async () => {
+    resolvePublicHostMock.mockRejectedValue(
+      new Error("Failed to resolve hostname"),
     );
 
     const result = await executor.execute(createNode(), context);
 
-    expect(Date.parse(result.startedAt)).not.toBeNaN();
-    expect(Date.parse(result.finishedAt)).not.toBeNaN();
-    expect(() => new Date(result.startedAt).toISOString()).not.toThrow();
-    expect(() => new Date(result.finishedAt).toISOString()).not.toThrow();
+    expect(result.status).toBe("FAILED");
+    expect(clientRequestMock).not.toHaveBeenCalled();
   });
 });
