@@ -168,6 +168,198 @@ describe("HttpRequestExecutor", () => {
     expect(clientRequestMock).not.toHaveBeenCalled();
   });
 
+  it("parses JSON responses", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+      body: (async function* () {
+        yield Buffer.from('{"message":"hello"}');
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        statusCode: 200,
+        body: {
+          type: "json",
+          value: {
+            message: "hello",
+          },
+        },
+      },
+    });
+  });
+
+  it("parses JSON responses with charset parameters", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+      },
+      body: (async function* () {
+        yield Buffer.from('{"success":true}');
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        body: {
+          type: "json",
+          value: { success: true },
+        },
+      },
+    });
+  });
+
+  it("parses application/problem+json responses", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 404,
+      headers: {
+        "content-type": "application/problem+json",
+      },
+      body: (async function* () {
+        yield Buffer.from('{"title":"Not Found"}');
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        statusCode: 404,
+        body: {
+          type: "json",
+          value: { title: "Not Found" },
+        },
+      },
+    });
+  });
+
+  it("returns text responses as text", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "content-type": "text/plain",
+      },
+      body: (async function* () {
+        yield Buffer.from("Hello Circuit");
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        body: {
+          type: "text",
+          value: "Hello Circuit",
+        },
+      },
+    });
+  });
+
+  it("returns HTML responses as text", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "content-type": "text/html",
+      },
+      body: (async function* () {
+        yield Buffer.from("<h1>Hello</h1>");
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        body: {
+          type: "text",
+          value: "<h1>Hello</h1>",
+        },
+      },
+    });
+  });
+
+  it("returns null for empty responses", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 204,
+      headers: {},
+      body: (async function* () {})(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        statusCode: 204,
+        body: {
+          type: "empty",
+          value: null,
+        },
+      },
+    });
+  });
+
+  it("returns binary responses as Base64", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "content-type": "application/octet-stream",
+      },
+      body: (async function* () {
+        yield Buffer.from([0, 1, 2, 3]);
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "SUCCESS",
+      output: {
+        body: {
+          type: "binary",
+          value: "AAECAw==",
+        },
+      },
+    });
+  });
+
+  it("returns a structured failure for malformed JSON responses", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+      body: (async function* () {
+        yield Buffer.from('{"message":');
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "FAILED",
+      error: {
+        code: "HTTP_INVALID_JSON_RESPONSE",
+        message: "The server returned malformed JSON.",
+        retryable: false,
+      },
+    });
+  });
+
   it("returns a non-retryable failure for an invalid hostname", async () => {
     resolvePublicHostMock.mockRejectedValueOnce(new InvalidHostnameError());
 
@@ -290,7 +482,10 @@ describe("HttpRequestExecutor", () => {
     if (result.status !== "SUCCESS") return;
 
     expect(result.output.body).toEqual({
-      message: "success",
+      type: "json",
+      value: {
+        message: "success",
+      },
     });
   });
 
@@ -307,7 +502,10 @@ describe("HttpRequestExecutor", () => {
 
     if (result.status !== "SUCCESS") return;
 
-    expect(result.output.body).toBe("Hello Circuit");
+    expect(result.output.body).toEqual({
+      type: "text",
+      value: "Hello Circuit",
+    });
   });
 
   it("handles an empty response body", async () => {
@@ -319,7 +517,10 @@ describe("HttpRequestExecutor", () => {
 
     if (result.status !== "SUCCESS") return;
 
-    expect(result.output.body).toBeNull();
+    expect(result.output.body).toEqual({
+      type: "empty",
+      value: null,
+    });
   });
 
   it("returns HTTP 500 as a structured HTTP response", async () => {
@@ -335,7 +536,10 @@ describe("HttpRequestExecutor", () => {
 
     expect(result.output.statusCode).toBe(500);
     expect(result.output.body).toEqual({
-      error: "server error",
+      type: "json",
+      value: {
+        error: "server error",
+      },
     });
   });
 

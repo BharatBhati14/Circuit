@@ -23,6 +23,11 @@ import {
   validateHttpHeaders,
 } from "../../security/http-headers.js";
 
+import {
+  InvalidJsonResponseError,
+  parseResponseBody,
+} from "./http/response-parser.js";
+
 interface HttpRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;
@@ -139,19 +144,12 @@ export class HttpRequestExecutor implements NodeExecutor {
         chunks.push(buffer);
       }
 
-      const responseText = Buffer.concat(chunks).toString("utf8");
+      const responseBuffer = Buffer.concat(chunks);
 
-      let responseBody: unknown = responseText;
-
-      if (responseText.length === 0) {
-        responseBody = null;
-      } else {
-        try {
-          responseBody = JSON.parse(responseText);
-        } catch {
-          // Keep non-JSON responses as text.
-        }
-      }
+      const responseBody = parseResponseBody(
+        responseBuffer,
+        headers["content-type"],
+      );
 
       return {
         status: "SUCCESS",
@@ -184,6 +182,19 @@ export class HttpRequestExecutor implements NodeExecutor {
           status: "FAILED",
           error: {
             code: "HTTP_INVALID_HEADERS",
+            message: error.message,
+            retryable: false,
+          },
+          startedAt,
+          finishedAt,
+        };
+      }
+
+      if (error instanceof InvalidJsonResponseError) {
+        return {
+          status: "FAILED",
+          error: {
+            code: "HTTP_INVALID_JSON_RESPONSE",
             message: error.message,
             retryable: false,
           },
