@@ -18,6 +18,11 @@ import {
   UnsafeHostError,
 } from "../../security/host-errors.js";
 
+import {
+  InvalidHttpHeadersError,
+  validateHttpHeaders,
+} from "../../security/http-headers.js";
+
 interface HttpRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;
@@ -62,14 +67,7 @@ export class HttpRequestExecutor implements NodeExecutor {
 
       const config = node.config as unknown as HttpRequestConfig;
 
-      // Prevent callers from overriding the HTTP Host header.
-      const hasHostHeader = Object.keys(config.headers ?? {}).some(
-        (header) => header.toLowerCase() === "host",
-      );
-
-      if (hasHostHeader) {
-        throw new InvalidWorkflowError("The Host header cannot be overridden.");
-      }
+      validateHttpHeaders(config.headers);
 
       const url = new URL(config.url);
 
@@ -173,6 +171,19 @@ export class HttpRequestExecutor implements NodeExecutor {
           status: "FAILED",
           error: {
             code: "INVALID_NODE_CONFIG",
+            message: error.message,
+            retryable: false,
+          },
+          startedAt,
+          finishedAt,
+        };
+      }
+
+      if (error instanceof InvalidHttpHeadersError) {
+        return {
+          status: "FAILED",
+          error: {
+            code: "HTTP_INVALID_HEADERS",
             message: error.message,
             retryable: false,
           },

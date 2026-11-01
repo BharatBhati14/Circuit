@@ -112,7 +112,7 @@ describe("HttpRequestExecutor", () => {
       }
 
       expect(result.error).toEqual({
-        code: "INVALID_NODE_CONFIG",
+        code: "HTTP_INVALID_HEADERS",
         message: "The Host header cannot be overridden.",
         retryable: false,
       });
@@ -121,6 +121,52 @@ describe("HttpRequestExecutor", () => {
       expect(clientRequestMock).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects invalid header names before DNS resolution", async () => {
+    const node = createNode({
+      config: {
+        method: "GET",
+        url: "https://example.com",
+        headers: {
+          "invalid header": "value",
+        },
+      },
+    });
+
+    const result = await executor.execute(node, context);
+
+    expect(result.status).toBe("FAILED");
+
+    if (result.status !== "FAILED") return;
+
+    expect(result.error.code).toBe("HTTP_INVALID_HEADERS");
+    expect(result.error.retryable).toBe(false);
+    expect(resolvePublicHostMock).not.toHaveBeenCalled();
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects CRLF header injection before DNS resolution", async () => {
+    const node = createNode({
+      config: {
+        method: "GET",
+        url: "https://example.com",
+        headers: {
+          "x-custom": "value\r\nInjected: true",
+        },
+      },
+    });
+
+    const result = await executor.execute(node, context);
+
+    expect(result.status).toBe("FAILED");
+
+    if (result.status !== "FAILED") return;
+
+    expect(result.error.code).toBe("HTTP_INVALID_HEADERS");
+    expect(result.error.retryable).toBe(false);
+    expect(resolvePublicHostMock).not.toHaveBeenCalled();
+    expect(clientRequestMock).not.toHaveBeenCalled();
+  });
 
   it("returns a non-retryable failure for an invalid hostname", async () => {
     resolvePublicHostMock.mockRejectedValueOnce(new InvalidHostnameError());
