@@ -90,6 +90,38 @@ function createResponse(
 }
 
 describe("HttpRequestExecutor", () => {
+  it.each(["Host", "host", "HOST", "hOsT"])(
+    "rejects the %s header",
+    async (headerName) => {
+      const node = createNode({
+        config: {
+          method: "GET",
+          url: "https://example.com",
+          headers: {
+            [headerName]: "attacker.example.com",
+          },
+        },
+      });
+
+      const result = await executor.execute(node, context);
+
+      expect(result.status).toBe("FAILED");
+
+      if (result.status !== "FAILED") {
+        throw new Error("Expected execution to fail");
+      }
+
+      expect(result.error).toEqual({
+        code: "INVALID_NODE_CONFIG",
+        message: "The Host header cannot be overridden.",
+        retryable: false,
+      });
+
+      expect(resolvePublicHostMock).not.toHaveBeenCalled();
+      expect(clientRequestMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns a non-retryable failure for an invalid hostname", async () => {
     resolvePublicHostMock.mockRejectedValueOnce(new InvalidHostnameError());
 

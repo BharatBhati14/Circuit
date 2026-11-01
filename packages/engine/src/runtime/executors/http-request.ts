@@ -61,6 +61,16 @@ export class HttpRequestExecutor implements NodeExecutor {
       validateNodeConfig(node);
 
       const config = node.config as unknown as HttpRequestConfig;
+
+      // Prevent callers from overriding the HTTP Host header.
+      const hasHostHeader = Object.keys(config.headers ?? {}).some(
+        (header) => header.toLowerCase() === "host",
+      );
+
+      if (hasHostHeader) {
+        throw new InvalidWorkflowError("The Host header cannot be overridden.");
+      }
+
       const url = new URL(config.url);
 
       if (!["http:", "https:"].includes(url.protocol)) {
