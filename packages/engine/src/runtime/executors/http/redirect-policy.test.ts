@@ -217,6 +217,10 @@ describe("shouldPreserveRequestBody", () => {
   it("preserves the body for 308", () => {
     expect(shouldPreserveRequestBody(308, "POST")).toBe(true);
   });
+
+  it("preserves the body for PUT on a 301 redirect", () => {
+    expect(shouldPreserveRequestBody(301, "PUT")).toBe(true);
+  });
 });
 
 describe("filterRedirectHeaders", () => {
@@ -281,9 +285,9 @@ describe("assertRedirectLimit", () => {
     );
   });
 
-  it("rejects redirect attempts above the limit", () => {
+  it("rejects the next redirect after five redirects", () => {
     expectRedirectError(
-      () => assertRedirectLimit(MAX_HTTP_REDIRECTS + 1),
+      () => assertRedirectLimit(MAX_HTTP_REDIRECTS),
       "HTTP_TOO_MANY_REDIRECTS",
     );
   });

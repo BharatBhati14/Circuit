@@ -3,20 +3,11 @@ import type {
   NodeExecutionResult,
   WorkflowNode,
 } from "@circuit/contracts";
-import { Client } from "undici";
 
 import { InvalidWorkflowError } from "../../errors.js";
-import { isPublicIpAddress } from "../../security/ip-address.js";
-import { resolvePublicHost } from "../../security/resolve-public-host.js";
-import { createPinnedConnector } from "../../security/pinned-connector.js";
+
 import { validateNodeConfig } from "../../validation/node-config.js";
 import type { NodeExecutor } from "../types.js";
-
-import {
-  HostResolutionError,
-  InvalidHostnameError,
-  UnsafeHostError,
-} from "../../security/host-errors.js";
 
 import {
   InvalidHttpHeadersError,
@@ -32,6 +23,18 @@ import {
   normalizeResponseHeaders,
 } from "./http/response-headers.js";
 
+import {
+  executeHttpTransport,
+  HttpResponseTooLargeError,
+} from "./http/http-transport.js";
+
+import {
+  HostResolutionError,
+  InvalidHostnameError,
+  UnsafeHostError,
+} from "../../security/host-errors.js";
+import { HttpRedirectError } from "./http/redirect-policy.js";
+
 interface HttpRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;
@@ -40,15 +43,15 @@ interface HttpRequestConfig {
   timeoutMs?: number;
 }
 
-const MAX_RESPONSE_SIZE = 5 * 1024 * 1024;
+// const MAX_RESPONSE_SIZE = 5 * 1024 * 1024;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.name === "TimeoutError") {
     return "The HTTP request timed out.";
   }
 
-  if (error instanceof Error && error.message === "RESPONSE_TOO_LARGE") {
-    return "The HTTP response exceeded the 5 MB size limit.";
+  if (error instanceof HttpResponseTooLargeError) {
+    return error.message;
   }
 
   return "The HTTP request failed due to a network or request error.";
@@ -63,7 +66,7 @@ export class HttpRequestExecutor implements NodeExecutor {
   ): Promise<NodeExecutionResult> {
     const startedAt = new Date().toISOString();
 
-    let client: Client | undefined;
+    // let client: Client | undefined;
 
     try {
       if (node.type !== this.type) {
@@ -92,75 +95,26 @@ export class HttpRequestExecutor implements NodeExecutor {
         );
       }
 
-      const hostname = url.hostname
-        .toLowerCase()
-        .replace(/^\[|\]$/g, "")
-        .replace(/\.$/, "");
-
-      const addresses = await resolvePublicHost(hostname);
-
-      const selectedAddress = addresses[0];
-
-      if (!selectedAddress || !isPublicIpAddress(selectedAddress.address)) {
-        throw new InvalidWorkflowError(
-          "The target hostname does not resolve to a public IP address.",
-        );
-      }
-
-      const connector = createPinnedConnector(
-        hostname,
-        selectedAddress.address,
-        selectedAddress.family,
-      );
-
-      client = new Client(url.origin, {
-        connect: connector,
-        allowH2: false,
-        maxResponseSize: MAX_RESPONSE_SIZE,
-        bodyTimeout: config.timeoutMs ?? 10_000,
-        headersTimeout: config.timeoutMs ?? 10_000,
-      });
-
-      const response = await client.request({
+      const response = await executeHttpTransport({
+        url,
         method: config.method,
-        path: `${url.pathname}${url.search}`,
         headers: config.headers,
-        ...(config.body !== undefined
-          ? { body: JSON.stringify(config.body) }
-          : {}),
-        signal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
+        body:
+          config.body !== undefined ? JSON.stringify(config.body) : undefined,
+        timeoutMs: config.timeoutMs ?? 10_000,
       });
 
-      const { statusCode, headers, body } = response;
-
-      const normalizedHeaders = normalizeResponseHeaders(headers);
-
-      const chunks: Buffer[] = [];
-      let totalSize = 0;
-
-      for await (const chunk of body) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-
-        totalSize += buffer.length;
-
-        if (totalSize > MAX_RESPONSE_SIZE) {
-          throw new Error("RESPONSE_TOO_LARGE");
-        }
-
-        chunks.push(buffer);
-      }
-
-      const responseBuffer = Buffer.concat(chunks);
+      const normalizedHeaders = normalizeResponseHeaders(response.headers);
 
       const responseBody = parseResponseBody(
-        responseBuffer,
+        response.body,
         normalizedHeaders["content-type"],
       );
 
       return {
         status: "SUCCESS",
         output: {
-          statusCode,
+          statusCode: response.statusCode,
           headers: normalizedHeaders,
           body: responseBody,
         },
@@ -175,6 +129,19 @@ export class HttpRequestExecutor implements NodeExecutor {
           status: "FAILED",
           error: {
             code: "INVALID_NODE_CONFIG",
+            message: error.message,
+            retryable: false,
+          },
+          startedAt,
+          finishedAt,
+        };
+      }
+
+      if (error instanceof HttpRedirectError) {
+        return {
+          status: "FAILED",
+          error: {
+            code: error.code,
             message: error.message,
             retryable: false,
           },
@@ -268,8 +235,7 @@ export class HttpRequestExecutor implements NodeExecutor {
         error instanceof Error &&
         (error.name === "TimeoutError" || error.name === "AbortError");
 
-      const responseTooLarge =
-        error instanceof Error && error.message === "RESPONSE_TOO_LARGE";
+      const responseTooLarge = error instanceof HttpResponseTooLargeError;
 
       const dnsFailure =
         error instanceof Error &&
@@ -294,12 +260,6 @@ export class HttpRequestExecutor implements NodeExecutor {
         startedAt,
         finishedAt,
       };
-    } finally {
-      if (client) {
-        await client.close().catch(() => {
-          client?.destroy();
-        });
-      }
     }
   }
 }

@@ -106,6 +106,8 @@ export function filterRedirectHeaders(
     "authorization",
     "cookie",
     "proxy-authorization",
+    // "www-authenticate",
+    // "proxy-authenticate",
   ]);
 
   return Object.fromEntries(
