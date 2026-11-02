@@ -489,6 +489,92 @@ describe("HttpRequestExecutor", () => {
     });
   });
 
+  it("normalizes response header names to lowercase", async () => {
+    clientRequestMock.mockResolvedValueOnce(
+      createResponse(JSON.stringify({ message: "success" }), 200, {
+        "Content-Type": "application/json",
+        "X-Custom-Header": "Circuit",
+      }),
+    );
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("SUCCESS");
+
+    if (result.status === "SUCCESS") {
+      expect(result.output.headers).toMatchObject({
+        "content-type": "application/json",
+        "x-custom-header": "Circuit",
+      });
+    }
+  });
+
+  it("preserves multiple Set-Cookie response header values", async () => {
+    clientRequestMock.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {
+        "set-cookie": ["session=abc; HttpOnly", "theme=dark; Secure"],
+      },
+      body: (async function* () {
+        yield Buffer.from("{}");
+      })(),
+    });
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("SUCCESS");
+
+    if (result.status === "SUCCESS") {
+      const headers = result.output.headers as Record<
+        string,
+        string | string[] | undefined
+      >;
+
+      expect(headers["set-cookie"]).toEqual([
+        "session=abc; HttpOnly",
+        "theme=dark; Secure",
+      ]);
+    }
+  });
+
+  it("uses normalized content-type when parsing response bodies", async () => {
+    clientRequestMock.mockResolvedValueOnce(
+      createResponse(JSON.stringify({ message: "success" }), 200, {
+        "Content-Type": "application/json",
+      }),
+    );
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("SUCCESS");
+
+    if (result.status === "SUCCESS") {
+      expect(result.output.body).toEqual({
+        type: "json",
+        value: { message: "success" },
+      });
+    }
+  });
+
+  it("returns a non-retryable failure for invalid response headers", async () => {
+    clientRequestMock.mockResolvedValueOnce(
+      createResponse("{}", 200, {
+        "Content-Type": "application/json",
+        "content-type": "text/plain",
+      } as unknown as Record<string, string>),
+    );
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result).toMatchObject({
+      status: "FAILED",
+      error: {
+        code: "HTTP_INVALID_RESPONSE_HEADERS",
+        retryable: false,
+      },
+    });
+  });
+
   it("preserves a plain-text response", async () => {
     clientRequestMock.mockResolvedValue(
       createResponse("Hello Circuit", 200, {
