@@ -34,6 +34,7 @@ import {
   UnsafeHostError,
 } from "../../security/host-errors.js";
 import { HttpRedirectError } from "./http/redirect-policy.js";
+import { isRetryableTransportError } from "./http/retryable-errors.js";
 
 interface HttpRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -255,7 +256,7 @@ export class HttpRequestExecutor implements NodeExecutor {
                 ? "HTTP_DNS_FAILED"
                 : "HTTP_REQUEST_FAILED",
           message: getErrorMessage(error),
-          retryable: !responseTooLarge && !dnsFailure && !timedOut,
+          retryable: isRetryableTransportError(error),
         },
         startedAt,
         finishedAt,

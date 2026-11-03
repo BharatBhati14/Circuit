@@ -672,7 +672,11 @@ describe("HttpRequestExecutor", () => {
   });
 
   it("returns a structured failure for network errors", async () => {
-    clientRequestMock.mockRejectedValue(new Error("Connection refused"));
+    const networkError = Object.assign(new Error("Connection refused"), {
+      code: "ECONNREFUSED",
+    });
+
+    clientRequestMock.mockRejectedValue(networkError);
 
     const result = await executor.execute(createNode(), context);
 
@@ -697,7 +701,7 @@ describe("HttpRequestExecutor", () => {
     if (result.status !== "FAILED") return;
 
     expect(result.error.code).toBe("HTTP_REQUEST_TIMEOUT");
-    expect(result.error.retryable).toBe(false);
+    expect(result.error.retryable).toBe(true);
     expect(result.error.message).toBe("The HTTP request timed out.");
   });
 
