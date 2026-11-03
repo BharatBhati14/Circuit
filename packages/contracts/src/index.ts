@@ -49,6 +49,7 @@ export type NodeExecutionStatus =
  * `input` contains data supplied to the current node.
  * `previousOutputs` contains outputs from upstream nodes, keyed by their node IDs.
  */
+
 export interface NodeExecutionContext {
   executionId: string;
   workflowId: string;
@@ -57,6 +58,8 @@ export interface NodeExecutionContext {
   attempt: number;
   input: Record<string, unknown>;
   previousOutputs: Record<string, unknown>;
+
+  signal?: AbortSignal;
 }
 
 // Successful result returned by a node executor.
@@ -80,5 +83,15 @@ export interface NodeExecutionFailure {
   finishedAt: string;
 }
 
+export interface NodeExecutionCancelled {
+  status: "CANCELLED";
+  reason?: string;
+  startedAt: string;
+  finishedAt: string;
+}
+
 // Result produced by executing a single workflow node.
-export type NodeExecutionResult = NodeExecutionSuccess | NodeExecutionFailure;
+export type NodeExecutionResult =
+  | NodeExecutionSuccess
+  | NodeExecutionFailure
+  | NodeExecutionCancelled;

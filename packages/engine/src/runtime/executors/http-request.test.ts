@@ -401,22 +401,38 @@ describe("HttpRequestExecutor", () => {
     expect(clientRequestMock).not.toHaveBeenCalled();
   });
 
-  it("marks temporary DNS failures as retryable", async () => {
+  it("recovers from a temporary DNS failure", async () => {
     const cause = Object.assign(new Error("Temporary DNS failure"), {
       code: "EAI_AGAIN",
     });
 
-    resolvePublicHostMock.mockRejectedValueOnce(
-      new HostResolutionError("Failed to resolve hostname", cause),
-    );
+    resolvePublicHostMock
+      .mockRejectedValueOnce(
+        new HostResolutionError("Failed to resolve hostname", cause),
+      )
+      .mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+
+    const result = await executor.execute(createNode(), context);
+
+    expect(result.status).toBe("SUCCESS");
+    expect(resolvePublicHostMock).toHaveBeenCalledTimes(2);
+    expect(clientRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a retryable failure when temporary DNS failures persist", async () => {
+    const cause = Object.assign(new Error("Temporary DNS failure"), {
+      code: "EAI_AGAIN",
+    });
+
+    resolvePublicHostMock.mockImplementation(async () => {
+      throw new HostResolutionError("Failed to resolve hostname", cause);
+    });
 
     const result = await executor.execute(createNode(), context);
 
     expect(result.status).toBe("FAILED");
 
-    if (result.status !== "FAILED") {
-      throw new Error("Expected execution to fail");
-    }
+    if (result.status !== "FAILED") return;
 
     expect(result.error).toEqual({
       code: "HTTP_DNS_FAILED",
@@ -424,6 +440,7 @@ describe("HttpRequestExecutor", () => {
       retryable: true,
     });
 
+    expect(resolvePublicHostMock).toHaveBeenCalledTimes(3);
     expect(clientRequestMock).not.toHaveBeenCalled();
   });
 
@@ -610,7 +627,7 @@ describe("HttpRequestExecutor", () => {
   });
 
   it("returns HTTP 500 as a structured HTTP response", async () => {
-    clientRequestMock.mockResolvedValue(
+    clientRequestMock.mockImplementation(async () =>
       createResponse('{"error":"server error"}', 500),
     );
 
@@ -621,12 +638,15 @@ describe("HttpRequestExecutor", () => {
     if (result.status !== "SUCCESS") return;
 
     expect(result.output.statusCode).toBe(500);
+
     expect(result.output.body).toEqual({
       type: "json",
       value: {
         error: "server error",
       },
     });
+
+    expect(clientRequestMock).toHaveBeenCalledTimes(3);
   });
 
   it("passes configured headers and a serialized JSON body", async () => {
@@ -779,5 +799,21 @@ describe("HttpRequestExecutor", () => {
 
     expect(result.status).toBe("FAILED");
     expect(clientRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("returns CANCELLED when execution is externally aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Workflow cancelled"));
+
+    const result = await executor.execute(createNode(), {
+      ...context,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe("CANCELLED");
+
+    if (result.status !== "CANCELLED") return;
+
+    expect(result.reason).toBe("Workflow cancelled");
   });
 });

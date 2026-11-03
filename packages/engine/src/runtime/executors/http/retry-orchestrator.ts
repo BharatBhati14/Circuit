@@ -19,7 +19,7 @@ import { canRetryHttpRequest } from "./idempotency-policy.js";
 export interface RetryOrchestratorOptions {
   policy?: RetryPolicy;
   transport?: (request: HttpTransportRequest) => Promise<HttpTransportResponse>;
-  delay?: (milliseconds: number) => Promise<void>;
+  delay?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 
 // export interface HttpTransportResponse {
@@ -28,8 +28,33 @@ export interface RetryOrchestratorOptions {
 //   body: Buffer;
 // }
 
-const defaultDelay = (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, milliseconds));
+const defaultDelay = (
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, milliseconds);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(signal?.reason);
+    };
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 export async function executeWithRetry(
   request: HttpTransportRequest,
@@ -46,8 +71,12 @@ export async function executeWithRetry(
   let attempt = 1;
 
   while (true) {
+    request.signal?.throwIfAborted();
+
     try {
       const response = await transport(request);
+
+      request.signal?.throwIfAborted();
 
       if (
         !retrySafety.allowed ||
@@ -57,6 +86,11 @@ export async function executeWithRetry(
         return response;
       }
     } catch (error) {
+      // External cancellation must never trigger another attempt.
+      if (request.signal?.aborted) {
+        throw request.signal.reason ?? error;
+      }
+
       if (
         !retrySafety.allowed ||
         !isRetryableTransportError(error) ||
@@ -66,9 +100,13 @@ export async function executeWithRetry(
       }
     }
 
+    request.signal?.throwIfAborted();
+
     const backoffDelay = calculateBackoffDelay(attempt, policy);
 
-    await delay(backoffDelay);
+    await delay(backoffDelay, request.signal);
+
+    request.signal?.throwIfAborted();
 
     attempt += 1;
   }

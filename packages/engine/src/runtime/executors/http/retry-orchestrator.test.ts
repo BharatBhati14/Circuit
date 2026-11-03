@@ -121,6 +121,48 @@ describe("executeWithRetry", () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
+  it("does not execute a request when already cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Workflow cancelled"));
+
+    const transport = vi.fn().mockResolvedValue(createResponse());
+
+    await expect(
+      executeWithRetry(
+        {
+          ...createRequest(),
+          signal: controller.signal,
+        },
+        { transport, delay: noDelay },
+      ),
+    ).rejects.toThrow("Workflow cancelled");
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("cancels during retry backoff", async () => {
+    const controller = new AbortController();
+
+    const transport = vi.fn().mockResolvedValue(createResponse(503));
+
+    const delay = vi.fn(async () => {
+      controller.abort(new Error("Workflow cancelled"));
+    });
+
+    await expect(
+      executeWithRetry(
+        {
+          ...createRequest(),
+          signal: controller.signal,
+        },
+        { transport, delay },
+      ),
+    ).rejects.toThrow("Workflow cancelled");
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(delay).toHaveBeenCalledTimes(1);
+  });
+
   it("returns a successful response on the first attempt", async () => {
     const transport = vi.fn().mockResolvedValue(createResponse());
 

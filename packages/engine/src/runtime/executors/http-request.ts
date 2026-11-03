@@ -23,10 +23,9 @@ import {
   normalizeResponseHeaders,
 } from "./http/response-headers.js";
 
-import {
-  executeHttpTransport,
-  HttpResponseTooLargeError,
-} from "./http/http-transport.js";
+import { HttpResponseTooLargeError } from "./http/http-transport.js";
+
+import { executeWithRetry } from "./http/retry-orchestrator.js";
 
 import {
   HostResolutionError,
@@ -63,7 +62,7 @@ export class HttpRequestExecutor implements NodeExecutor {
 
   async execute(
     node: WorkflowNode,
-    _context: NodeExecutionContext,
+    context: NodeExecutionContext,
   ): Promise<NodeExecutionResult> {
     const startedAt = new Date().toISOString();
 
@@ -96,13 +95,14 @@ export class HttpRequestExecutor implements NodeExecutor {
         );
       }
 
-      const response = await executeHttpTransport({
+      const response = await executeWithRetry({
         url,
         method: config.method,
         headers: config.headers,
         body:
           config.body !== undefined ? JSON.stringify(config.body) : undefined,
         timeoutMs: config.timeoutMs ?? 10_000,
+        signal: context.signal,
       });
 
       const normalizedHeaders = normalizeResponseHeaders(response.headers);
@@ -124,6 +124,22 @@ export class HttpRequestExecutor implements NodeExecutor {
       };
     } catch (error) {
       const finishedAt = new Date().toISOString();
+
+      if (context.signal?.aborted) {
+        const reason = context.signal.reason;
+
+        return {
+          status: "CANCELLED",
+          reason:
+            reason instanceof Error
+              ? reason.message
+              : typeof reason === "string"
+                ? reason
+                : "Execution was cancelled.",
+          startedAt,
+          finishedAt,
+        };
+      }
 
       if (error instanceof InvalidWorkflowError) {
         return {

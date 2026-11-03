@@ -76,6 +76,8 @@ async function executeSingleHttpTransport(
   let client: Client | undefined;
 
   try {
+    request.signal?.throwIfAborted();
+
     validateTransportUrl(request.url);
 
     const hostname = request.url.hostname
@@ -160,7 +162,11 @@ export async function executeHttpTransport(
   const timeoutMs = request.timeoutMs || DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
 
-  const signal = AbortSignal.timeout(timeoutMs);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+
+  const signal = request.signal
+    ? AbortSignal.any([request.signal, timeoutSignal])
+    : timeoutSignal;
 
   let currentRequest: HttpTransportRequest = {
     ...request,
@@ -183,10 +189,14 @@ export async function executeHttpTransport(
       throw error;
     }
 
+    signal.throwIfAborted();
+
     const response = await executeSingleHttpTransport({
       ...currentRequest,
       timeoutMs: remainingTimeoutMs,
     });
+
+    signal.throwIfAborted();
 
     if (!isRedirectStatus(response.statusCode)) {
       return response;
