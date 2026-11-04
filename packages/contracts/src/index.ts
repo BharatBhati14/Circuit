@@ -90,8 +90,29 @@ export interface NodeExecutionCancelled {
   finishedAt: string;
 }
 
+export interface NodeExecutionSkipped {
+  status: "SKIPPED";
+  reason: string;
+  startedAt: string;
+  finishedAt: string;
+}
+
 // Result produced by executing a single workflow node.
 export type NodeExecutionResult =
   | NodeExecutionSuccess
   | NodeExecutionFailure
-  | NodeExecutionCancelled;
+  | NodeExecutionCancelled
+  | NodeExecutionSkipped;
+
+export interface WorkflowExecutionResult {
+  executionId: string;
+  workflowId: string;
+  workflowVersion: number;
+
+  status: ExecutionStatus;
+
+  nodeResults: Record<string, NodeExecutionResult>;
+
+  startedAt: string;
+  finishedAt: string;
+}
