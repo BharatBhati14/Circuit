@@ -126,3 +126,99 @@ describe("DependencyScheduler", () => {
     );
   });
 });
+
+describe("DependencyScheduler - terminal states", () => {
+  it("marks a node as skipped", () => {
+    const workflow = createWorkflow();
+    const scheduler = new DependencyScheduler(workflow);
+
+    const readyNodes = scheduler.getReadyNodes();
+
+    for (const nodeId of readyNodes) {
+      scheduler.markSkipped(nodeId);
+    }
+
+    expect(scheduler.getStatus(readyNodes[0]!)).toBe("SKIPPED");
+  });
+
+  it("automatically skips dependent nodes after failure", () => {
+    const workflow = createWorkflow();
+    const scheduler = new DependencyScheduler(workflow);
+
+    const readyNodes = scheduler.getReadyNodes();
+
+    scheduler.markFailed(readyNodes[0]!);
+
+    expect(scheduler.getStatus("C")).toBe("SKIPPED");
+  });
+
+  it("recursively skips downstream dependencies", () => {
+    const workflow = createWorkflow();
+    const scheduler = new DependencyScheduler(workflow);
+
+    const readyNodes = scheduler.getReadyNodes();
+
+    scheduler.markFailed(readyNodes[0]!);
+
+    expect(scheduler.getStatus("C")).toBe("SKIPPED");
+    expect(scheduler.getStatus("D")).toBe("SKIPPED");
+  });
+
+  it("allows independent branches to continue after failure", () => {
+    const workflow = createWorkflow();
+
+    workflow.edges = [
+      { id: "edge-1", source: "A", target: "B" },
+      { id: "edge-2", source: "C", target: "D" },
+    ];
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    const readyNodes = scheduler.getReadyNodes();
+
+    expect(readyNodes).toEqual(["A", "C"]);
+
+    scheduler.markFailed("A");
+
+    expect(scheduler.getStatus("B")).toBe("SKIPPED");
+
+    // C was already scheduled, so it must not be returned again.
+    expect(scheduler.getStatus("C")).toBe("SCHEDULED");
+
+    scheduler.markCompleted("C");
+
+    expect(scheduler.getReadyNodes()).toEqual(["D"]);
+  });
+
+  it("recognizes completion when every node is terminal", () => {
+    const workflow = createWorkflow();
+    const scheduler = new DependencyScheduler(workflow);
+
+    const readyNodes = scheduler.getReadyNodes();
+
+    for (const nodeId of readyNodes) {
+      scheduler.markFailed(nodeId);
+    }
+
+    expect(scheduler.isComplete()).toBe(true);
+  });
+
+  it("rejects duplicate terminal state transitions", () => {
+    const workflow = createWorkflow();
+    const scheduler = new DependencyScheduler(workflow);
+
+    const readyNodes = scheduler.getReadyNodes();
+    const nodeId = readyNodes[0]!;
+
+    scheduler.markCompleted(nodeId);
+
+    expect(() => scheduler.markFailed(nodeId)).toThrow();
+  });
+
+  it("rejects marking an unscheduled node as skipped", () => {
+    const workflow = createWorkflow();
+    const scheduler = new DependencyScheduler(workflow);
+
+    expect(() => scheduler.markSkipped("C")).toThrow();
+  });
+});

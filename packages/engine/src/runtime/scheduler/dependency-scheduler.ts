@@ -1,49 +1,32 @@
 import type { WorkflowDefinition } from "@circuit/contracts";
 
+type SchedulerNodeStatus = "SCHEDULED" | "COMPLETED" | "FAILED" | "SKIPPED";
+
 export class DependencyScheduler {
   private readonly dependencies = new Map<string, Set<string>>();
 
-  private readonly completed = new Set<string>();
-
-  private readonly failed = new Set<string>();
-
-  private readonly scheduled = new Set<string>();
+  private readonly statuses = new Map<string, SchedulerNodeStatus>();
 
   constructor(workflow: WorkflowDefinition) {
-    // Initialize dependency sets for every node.
     for (const node of workflow.nodes) {
       this.dependencies.set(node.id, new Set());
     }
 
-    // Build the dependency graph from workflow edges.
     for (const edge of workflow.edges) {
       this.dependencies.get(edge.target)?.add(edge.source);
     }
   }
 
-  /**
-   * Returns nodes whose dependencies have all completed successfully.
-   */
   getReadyNodes(): string[] {
+    this.propagateSkippedNodes();
+
     const readyNodes: string[] = [];
 
     for (const [nodeId, nodeDependencies] of this.dependencies) {
-      if (this.scheduled.has(nodeId)) {
-        continue;
-      }
+      if (this.statuses.has(nodeId)) continue;
 
-      // A node cannot execute if any dependency failed.
-      const hasFailedDependency = [...nodeDependencies].some((dependencyId) =>
-        this.failed.has(dependencyId),
-      );
-
-      if (hasFailedDependency) {
-        continue;
-      }
-
-      // All dependencies must have completed successfully.
       const dependenciesCompleted = [...nodeDependencies].every(
-        (dependencyId) => this.completed.has(dependencyId),
+        (dependencyId) => this.statuses.get(dependencyId) === "COMPLETED",
       );
 
       if (dependenciesCompleted) {
@@ -51,50 +34,82 @@ export class DependencyScheduler {
       }
     }
 
-    // Reserve these nodes so they cannot be scheduled again.
     for (const nodeId of readyNodes) {
-      this.scheduled.add(nodeId);
+      this.statuses.set(nodeId, "SCHEDULED");
     }
 
     return readyNodes;
   }
 
-  /**
-   * Marks a node as successfully completed.
-   */
   markCompleted(nodeId: string): void {
-    this.assertKnownNode(nodeId);
-
-    if (!this.scheduled.has(nodeId)) {
-      throw new Error(`Node "${nodeId}" has not been scheduled.`);
-    }
-
-    this.completed.add(nodeId);
+    this.assertScheduled(nodeId);
+    this.statuses.set(nodeId, "COMPLETED");
+    this.propagateSkippedNodes();
   }
 
-  /**
-   * Marks a node as unsuccessful.
-   */
   markFailed(nodeId: string): void {
-    this.assertKnownNode(nodeId);
-
-    if (!this.scheduled.has(nodeId)) {
-      throw new Error(`Node "${nodeId}" has not been scheduled.`);
-    }
-
-    this.failed.add(nodeId);
+    this.assertScheduled(nodeId);
+    this.statuses.set(nodeId, "FAILED");
+    this.propagateSkippedNodes();
   }
 
-  /**
-   * Checks whether every node has reached a terminal state.
-   */
+  markSkipped(nodeId: string): void {
+    this.assertScheduled(nodeId);
+    this.statuses.set(nodeId, "SKIPPED");
+    this.propagateSkippedNodes();
+  }
+
+  getStatus(nodeId: string): SchedulerNodeStatus | undefined {
+    this.assertKnownNode(nodeId);
+    return this.statuses.get(nodeId);
+  }
+
   isComplete(): boolean {
-    return this.completed.size + this.failed.size === this.dependencies.size;
+    return this.statuses.size === this.dependencies.size;
+  }
+
+  private propagateSkippedNodes(): void {
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+
+      for (const [nodeId, nodeDependencies] of this.dependencies) {
+        if (this.statuses.has(nodeId)) continue;
+
+        const hasBlockedDependency = [...nodeDependencies].some(
+          (dependencyId) => {
+            const status = this.statuses.get(dependencyId);
+
+            return status === "FAILED" || status === "SKIPPED";
+          },
+        );
+
+        if (hasBlockedDependency) {
+          this.statuses.set(nodeId, "SKIPPED");
+          changed = true;
+        }
+      }
+    }
   }
 
   private assertKnownNode(nodeId: string): void {
     if (!this.dependencies.has(nodeId)) {
       throw new Error(`Unknown node ID: "${nodeId}".`);
+    }
+  }
+
+  private assertScheduled(nodeId: string): void {
+    this.assertKnownNode(nodeId);
+
+    const status = this.statuses.get(nodeId);
+
+    if (status === undefined) {
+      throw new Error(`Node "${nodeId}" has not been scheduled.`);
+    }
+
+    if (status !== "SCHEDULED") {
+      throw new Error(`Node "${nodeId}" has already reached a terminal state.`);
     }
   }
 }
