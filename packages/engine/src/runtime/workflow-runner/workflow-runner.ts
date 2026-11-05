@@ -22,6 +22,7 @@ export class WorkflowRunner {
     const scheduler = new DependencyScheduler(options.workflow);
 
     const nodeResults: Record<string, NodeExecutionResult> = {};
+    const nodeOutputs = new Map<string, Record<string, unknown>>();
 
     const nodes = new Map<string, WorkflowNode>(
       options.workflow.nodes.map((node) => [node.id, node]),
@@ -43,6 +44,21 @@ export class WorkflowRunner {
 
         const nodeStartedAt = new Date().toISOString();
 
+        const previousOutputs = Object.fromEntries(
+          options.workflow.edges
+            .filter((edge) => edge.target === nodeId)
+            .map((edge) => {
+              const output = nodeOutputs.get(edge.source);
+
+              if (!output) {
+                throw new Error(
+                  `Output for dependency "${edge.source}" is missing.`,
+                );
+              }
+
+              return [edge.source, output];
+            }),
+        );
         try {
           const executor = this.registry.get(node.type);
 
@@ -53,7 +69,7 @@ export class WorkflowRunner {
             nodeId: node.id,
             attempt: 1,
             input: options.input ?? {},
-            previousOutputs: {},
+            previousOutputs,
           });
 
           nodeResults[nodeId] = result;
@@ -61,6 +77,7 @@ export class WorkflowRunner {
           switch (result.status) {
             case "SUCCESS":
               scheduler.markCompleted(nodeId);
+              nodeOutputs.set(nodeId, result.output);
               break;
 
             case "FAILED":

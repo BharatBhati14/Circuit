@@ -255,6 +255,169 @@ describe("WorkflowRunner", () => {
     ).toEqual(expectedOutput);
   });
 
+  it("propagates outputs through a linear workflow", async () => {
+    const workflow = createWorkflow(
+      ["A", "B", "C"],
+      [createEdge("A", "B"), createEdge("B", "C")],
+    );
+
+    const outputA = { userId: 101, name: "John" };
+    const outputB = { message: "Hello John" };
+    const outputC = { success: true };
+
+    const { executor, execute } = createMockExecutor(async (node) => {
+      switch (node.id) {
+        case "A":
+          return createSuccessResult(outputA);
+        case "B":
+          return createSuccessResult(outputB);
+        case "C":
+          return createSuccessResult(outputC);
+        default:
+          throw new Error(`Unexpected node: ${node.id}`);
+      }
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(3);
+
+    expect(execute.mock.calls[0]?.[1].previousOutputs).toEqual({});
+
+    expect(execute.mock.calls[1]?.[1].previousOutputs).toEqual({
+      A: outputA,
+    });
+
+    expect(execute.mock.calls[2]?.[1].previousOutputs).toEqual({
+      B: outputB,
+    });
+
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("passes outputs from multiple direct dependencies", async () => {
+    const workflow = createWorkflow(
+      ["A", "B", "C"],
+      [createEdge("A", "C"), createEdge("B", "C")],
+    );
+
+    const outputA = { valueA: 10 };
+    const outputB = { valueB: 20 };
+    const outputC = { total: 30 };
+
+    const { executor, execute } = createMockExecutor(async (node) => {
+      switch (node.id) {
+        case "A":
+          return createSuccessResult(outputA);
+        case "B":
+          return createSuccessResult(outputB);
+        case "C":
+          return createSuccessResult(outputC);
+        default:
+          throw new Error(`Unexpected node: ${node.id}`);
+      }
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(3);
+
+    const cCall = execute.mock.calls.find(([node]) => node.id === "C");
+
+    expect(cCall?.[1].previousOutputs).toEqual({
+      A: outputA,
+      B: outputB,
+    });
+
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("does not expose outputs from unrelated branches", async () => {
+    const workflow = createWorkflow(
+      ["A", "B", "C", "D"],
+      [createEdge("A", "C"), createEdge("B", "D")],
+    );
+
+    const outputA = { dataA: "A output" };
+    const outputB = { dataB: "B output" };
+
+    const { executor, execute } = createMockExecutor(async (node) => {
+      if (node.id === "A") {
+        return createSuccessResult(outputA);
+      }
+
+      if (node.id === "B") {
+        return createSuccessResult(outputB);
+      }
+
+      return createSuccessResult();
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(4);
+
+    const cCall = execute.mock.calls.find(([node]) => node.id === "C");
+    const dCall = execute.mock.calls.find(([node]) => node.id === "D");
+
+    expect(cCall?.[1].previousOutputs).toEqual({
+      A: outputA,
+    });
+
+    expect(dCall?.[1].previousOutputs).toEqual({
+      B: outputB,
+    });
+
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("skips downstream nodes when a dependency fails", async () => {
+    const workflow = createWorkflow(
+      ["A", "B", "C"],
+      [createEdge("A", "B"), createEdge("B", "C")],
+    );
+
+    const { executor, execute } = createMockExecutor(async () =>
+      createFailureResult("Node A failed"),
+    );
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    expect(execute.mock.calls.map(([node]) => node.id)).toEqual(["A"]);
+
+    expect(result.nodeResults.A?.status).toBe("FAILED");
+    expect(result.nodeResults.B?.status).toBe("SKIPPED");
+    expect(result.nodeResults.C?.status).toBe("SKIPPED");
+
+    expect(result.status).toBe("FAILED");
+  });
+
   it("passes the correct execution context to executors", async () => {
     const workflow = createWorkflow(["A"]);
 
