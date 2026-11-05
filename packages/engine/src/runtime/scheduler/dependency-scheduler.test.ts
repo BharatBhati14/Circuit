@@ -223,6 +223,73 @@ describe("DependencyScheduler - terminal states", () => {
     expect(scheduler.getReadyNodes()).toEqual(["D"]);
   });
 
+  it("cancels all unscheduled nodes", () => {
+    const workflow = createWorkflow();
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    expect(scheduler.getReadyNodes(1)).toEqual(["A"]);
+
+    scheduler.cancelPendingNodes();
+
+    expect(scheduler.getStatus("A")).toBe("SCHEDULED");
+    expect(scheduler.getStatus("B")).toBe("CANCELLED");
+    expect(scheduler.getStatus("C")).toBe("CANCELLED");
+  });
+
+  it("does not schedule new nodes after cancellation", () => {
+    const workflow = createWorkflow();
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    scheduler.cancelPendingNodes();
+
+    expect(scheduler.getReadyNodes()).toEqual([]);
+  });
+
+  it("marks scheduled nodes as cancelled", () => {
+    const workflow = createWorkflow();
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    scheduler.getReadyNodes();
+
+    scheduler.markCancelled("A");
+
+    expect(scheduler.getStatus("A")).toBe("CANCELLED");
+    expect(scheduler.isComplete()).toBe(false);
+  });
+
+  it("completes when all pending nodes are cancelled", () => {
+    const workflow = createWorkflow();
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    scheduler.getReadyNodes();
+
+    scheduler.markCancelled("A");
+    scheduler.cancelPendingNodes();
+
+    expect(scheduler.getStatus("A")).toBe("CANCELLED");
+    expect(scheduler.getStatus("B")).toBe("CANCELLED");
+    expect(scheduler.getStatus("C")).toBe("CANCELLED");
+    expect(scheduler.getStatus("D")).toBe("CANCELLED");
+
+    expect(scheduler.isComplete()).toBe(true);
+  });
+
+  it("does not treat cancellation as dependency failure", () => {
+    const workflow = createWorkflow();
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    scheduler.getReadyNodes();
+
+    scheduler.markCancelled("A");
+
+    expect(scheduler.getStatus("B")).toBeUndefined();
+  });
+
   it("recognizes completion when every node is terminal", () => {
     const workflow = createWorkflow();
     const scheduler = new DependencyScheduler(workflow);

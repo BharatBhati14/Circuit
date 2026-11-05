@@ -1,11 +1,18 @@
 import type { WorkflowDefinition } from "@circuit/contracts";
 
-type SchedulerNodeStatus = "SCHEDULED" | "COMPLETED" | "FAILED" | "SKIPPED";
+type SchedulerNodeStatus =
+  | "SCHEDULED"
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED"
+  | "CANCELLED";
 
 export class DependencyScheduler {
   private readonly dependencies = new Map<string, Set<string>>();
 
   private readonly statuses = new Map<string, SchedulerNodeStatus>();
+
+  private cancellationRequested = false;
 
   constructor(workflow: WorkflowDefinition) {
     for (const node of workflow.nodes) {
@@ -25,6 +32,10 @@ export class DependencyScheduler {
     }
 
     this.propagateSkippedNodes();
+
+    if (this.cancellationRequested) {
+      return [];
+    }
 
     const readyNodes: string[] = [];
 
@@ -76,6 +87,23 @@ export class DependencyScheduler {
 
   isComplete(): boolean {
     return this.statuses.size === this.dependencies.size;
+  }
+
+  markCancelled(nodeId: string): void {
+    this.assertScheduled(nodeId);
+    this.statuses.set(nodeId, "CANCELLED");
+  }
+
+  cancelPendingNodes(): void {
+    this.cancellationRequested = true;
+
+    for (const nodeId of this.dependencies.keys()) {
+      // Already scheduled nodes may still be executing.
+      // Their cancellation will be recorded when they settle.
+      if (this.statuses.has(nodeId)) continue;
+
+      this.statuses.set(nodeId, "CANCELLED");
+    }
   }
 
   private propagateSkippedNodes(): void {
