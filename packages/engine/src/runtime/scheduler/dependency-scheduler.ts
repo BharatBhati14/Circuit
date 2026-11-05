@@ -17,12 +17,22 @@ export class DependencyScheduler {
     }
   }
 
-  getReadyNodes(): string[] {
+  getReadyNodes(limit = Number.MAX_SAFE_INTEGER): string[] {
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new RangeError(
+        "Concurrency limit must be a positive safe integer.",
+      );
+    }
+
     this.propagateSkippedNodes();
 
     const readyNodes: string[] = [];
 
     for (const [nodeId, nodeDependencies] of this.dependencies) {
+      if (readyNodes.length >= limit) {
+        break;
+      }
+
       if (this.statuses.has(nodeId)) continue;
 
       const dependenciesCompleted = [...nodeDependencies].every(

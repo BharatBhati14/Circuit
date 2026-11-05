@@ -452,6 +452,86 @@ describe("WorkflowRunner", () => {
     expect(result.status).toBe("COMPLETED");
   });
 
+  it("respects the configured concurrency limit", async () => {
+    const workflow = createWorkflow(["A", "B", "C", "D", "E"]);
+
+    let activeCount = 0;
+    let maxActiveCount = 0;
+
+    const { executor } = createMockExecutor(async () => {
+      activeCount++;
+      maxActiveCount = Math.max(maxActiveCount, activeCount);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      activeCount--;
+
+      return createSuccessResult();
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+      maxConcurrency: 2,
+    });
+
+    expect(maxActiveCount).toBe(2);
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("defaults to a concurrency limit of five", async () => {
+    const workflow = createWorkflow(["A", "B", "C", "D", "E", "F"]);
+
+    let activeCount = 0;
+    let maxActiveCount = 0;
+
+    const { executor } = createMockExecutor(async () => {
+      activeCount++;
+      maxActiveCount = Math.max(maxActiveCount, activeCount);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      activeCount--;
+
+      return createSuccessResult();
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+    });
+
+    expect(maxActiveCount).toBe(5);
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])(
+    "rejects invalid maxConcurrency: %s",
+    async (maxConcurrency) => {
+      const workflow = createWorkflow(["A"]);
+      const { executor } = createMockExecutor();
+
+      const runner = new WorkflowRunner(createRegistry(executor));
+
+      await expect(
+        runner.execute({
+          workflow,
+          executionId: "execution-1",
+          workflowVersion: 1,
+          maxConcurrency,
+        }),
+      ).rejects.toThrow("maxConcurrency must be a positive safe integer.");
+
+      expect(executor.execute).not.toHaveBeenCalled();
+    },
+  );
+
   it("passes the correct execution context to executors", async () => {
     const workflow = createWorkflow(["A"]);
 

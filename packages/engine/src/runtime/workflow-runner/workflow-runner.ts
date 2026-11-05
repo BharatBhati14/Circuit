@@ -17,6 +17,12 @@ export class WorkflowRunner {
   ): Promise<WorkflowExecutionResult> {
     const startedAt = new Date().toISOString();
 
+    const maxConcurrency = options.maxConcurrency ?? 5;
+
+    if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
+      throw new RangeError("maxConcurrency must be a positive safe integer.");
+    }
+
     validateWorkflow(options.workflow);
 
     const scheduler = new DependencyScheduler(options.workflow);
@@ -29,7 +35,7 @@ export class WorkflowRunner {
     );
 
     while (!scheduler.isComplete()) {
-      const readyNodeIds = scheduler.getReadyNodes();
+      const readyNodeIds = scheduler.getReadyNodes(maxConcurrency);
 
       if (readyNodeIds.length === 0) {
         break;

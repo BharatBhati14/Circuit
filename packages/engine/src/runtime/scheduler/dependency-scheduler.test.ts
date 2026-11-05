@@ -125,6 +125,39 @@ describe("DependencyScheduler", () => {
       'Node "B" has not been scheduled.',
     );
   });
+
+  it("schedules no more nodes than the concurrency limit", () => {
+    const workflow = createWorkflow();
+
+    workflow.edges = [];
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    expect(scheduler.getReadyNodes(2)).toEqual(["A", "B"]);
+    expect(scheduler.getReadyNodes(2)).toEqual(["C", "D"]);
+  });
+
+  it("does not schedule nodes beyond the concurrency limit", () => {
+    const workflow = createWorkflow();
+
+    const scheduler = new DependencyScheduler(workflow);
+
+    expect(scheduler.getReadyNodes(1)).toEqual(["A"]);
+    expect(scheduler.getStatus("B")).toBeUndefined();
+    expect(scheduler.getStatus("C")).toBeUndefined();
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])(
+    "rejects invalid concurrency limit: %s",
+    (limit) => {
+      const workflow = createWorkflow();
+      const scheduler = new DependencyScheduler(workflow);
+
+      expect(() => scheduler.getReadyNodes(limit)).toThrow(
+        "Concurrency limit must be a positive safe integer.",
+      );
+    },
+  );
 });
 
 describe("DependencyScheduler - terminal states", () => {
