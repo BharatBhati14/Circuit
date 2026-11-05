@@ -418,6 +418,40 @@ describe("WorkflowRunner", () => {
     expect(result.status).toBe("FAILED");
   });
 
+  it("executes independent nodes concurrently", async () => {
+    const workflow = createWorkflow(["A", "B", "C"]);
+
+    let startedCount = 0;
+    let release!: () => void;
+
+    const allStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const { executor } = createMockExecutor(async () => {
+      startedCount++;
+
+      if (startedCount === 3) {
+        release();
+      }
+
+      await allStarted;
+
+      return createSuccessResult();
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-1",
+      workflowVersion: 1,
+    });
+
+    expect(startedCount).toBe(3);
+    expect(result.status).toBe("COMPLETED");
+  });
+
   it("passes the correct execution context to executors", async () => {
     const workflow = createWorkflow(["A"]);
 

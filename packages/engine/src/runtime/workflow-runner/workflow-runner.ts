@@ -35,82 +35,83 @@ export class WorkflowRunner {
         break;
       }
 
-      for (const nodeId of readyNodeIds) {
-        const node = nodes.get(nodeId);
+      const batchResults = await Promise.all(
+        readyNodeIds.map(async (nodeId) => {
+          const nodeStartedAt = new Date().toISOString();
 
-        if (!node) {
-          throw new Error(`Workflow node "${nodeId}" was not found.`);
-        }
+          try {
+            const node = nodes.get(nodeId);
 
-        const nodeStartedAt = new Date().toISOString();
+            if (!node) {
+              throw new Error(`Workflow node "${nodeId}" was not found.`);
+            }
 
-        const previousOutputs = Object.fromEntries(
-          options.workflow.edges
-            .filter((edge) => edge.target === nodeId)
-            .map((edge) => {
-              const output = nodeOutputs.get(edge.source);
+            const previousOutputs = Object.fromEntries(
+              options.workflow.edges
+                .filter((edge) => edge.target === nodeId)
+                .map((edge) => {
+                  const output = nodeOutputs.get(edge.source);
 
-              if (!output) {
-                throw new Error(
-                  `Output for dependency "${edge.source}" is missing.`,
-                );
-              }
+                  if (!output) {
+                    throw new Error(
+                      `Output for dependency "${edge.source}" is missing.`,
+                    );
+                  }
 
-              return [edge.source, output];
-            }),
-        );
-        try {
-          const executor = this.registry.get(node.type);
+                  return [edge.source, output];
+                }),
+            );
 
-          const result = await executor.execute(node, {
-            executionId: options.executionId,
-            workflowId: options.workflow.id,
-            workflowVersion: options.workflowVersion,
-            nodeId: node.id,
-            attempt: 1,
-            input: options.input ?? {},
-            previousOutputs,
-          });
+            const executor = this.registry.get(node.type);
 
-          nodeResults[nodeId] = result;
+            const result = await executor.execute(node, {
+              executionId: options.executionId,
+              workflowId: options.workflow.id,
+              workflowVersion: options.workflowVersion,
+              nodeId: node.id,
+              attempt: 1,
+              input: options.input ?? {},
+              previousOutputs,
+            });
 
-          switch (result.status) {
-            case "SUCCESS":
-              scheduler.markCompleted(nodeId);
-              nodeOutputs.set(nodeId, result.output);
-              break;
+            return { nodeId, result };
+          } catch (error) {
+            const failure: NodeExecutionResult = {
+              status: "FAILED",
+              error: {
+                code: "NODE_EXECUTION_ERROR",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "An unexpected node execution error occurred.",
+                retryable: false,
+              },
+              startedAt: nodeStartedAt,
+              finishedAt: new Date().toISOString(),
+            };
 
-            case "FAILED":
-              scheduler.markFailed(nodeId);
-              break;
-
-            case "SKIPPED":
-              scheduler.markSkipped(nodeId);
-              break;
-
-            case "CANCELLED":
-              scheduler.markSkipped(nodeId);
-              break;
+            return { nodeId, result: failure };
           }
-        } catch (error) {
-          const finishedAt = new Date().toISOString();
+        }),
+      );
 
-          const failure: NodeExecutionResult = {
-            status: "FAILED",
-            error: {
-              code: "NODE_EXECUTION_ERROR",
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "An unexpected node execution error occurred.",
-              retryable: false,
-            },
-            startedAt: nodeStartedAt,
-            finishedAt,
-          };
+      for (const { nodeId, result } of batchResults) {
+        nodeResults[nodeId] = result;
 
-          nodeResults[nodeId] = failure;
-          scheduler.markFailed(nodeId);
+        switch (result.status) {
+          case "SUCCESS":
+            scheduler.markCompleted(nodeId);
+            nodeOutputs.set(nodeId, result.output);
+            break;
+
+          case "FAILED":
+            scheduler.markFailed(nodeId);
+            break;
+
+          case "SKIPPED":
+          case "CANCELLED":
+            scheduler.markSkipped(nodeId);
+            break;
         }
       }
     }
