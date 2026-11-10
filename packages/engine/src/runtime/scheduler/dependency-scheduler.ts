@@ -56,6 +56,7 @@ export class DependencyScheduler {
     }
 
     for (const nodeId of readyNodes) {
+      this.validateTransition(nodeId, "SCHEDULED");
       this.statuses.set(nodeId, "SCHEDULED");
     }
 
@@ -64,18 +65,21 @@ export class DependencyScheduler {
 
   markCompleted(nodeId: string): void {
     this.assertScheduled(nodeId);
+    this.validateTransition(nodeId, "COMPLETED");
     this.statuses.set(nodeId, "COMPLETED");
     this.propagateSkippedNodes();
   }
 
   markFailed(nodeId: string): void {
     this.assertScheduled(nodeId);
+    this.validateTransition(nodeId, "FAILED");
     this.statuses.set(nodeId, "FAILED");
     this.propagateSkippedNodes();
   }
 
   markSkipped(nodeId: string): void {
     this.assertScheduled(nodeId);
+    this.validateTransition(nodeId, "SKIPPED");
     this.statuses.set(nodeId, "SKIPPED");
     this.propagateSkippedNodes();
   }
@@ -91,6 +95,7 @@ export class DependencyScheduler {
 
   markCancelled(nodeId: string): void {
     this.assertScheduled(nodeId);
+    this.validateTransition(nodeId, "CANCELLED");
     this.statuses.set(nodeId, "CANCELLED");
   }
 
@@ -102,6 +107,7 @@ export class DependencyScheduler {
       // Their cancellation will be recorded when they settle.
       if (this.statuses.has(nodeId)) continue;
 
+      this.validateTransition(nodeId, "CANCELLED");
       this.statuses.set(nodeId, "CANCELLED");
     }
   }
@@ -124,6 +130,7 @@ export class DependencyScheduler {
         );
 
         if (hasBlockedDependency) {
+          this.validateTransition(nodeId, "SKIPPED");
           this.statuses.set(nodeId, "SKIPPED");
           changed = true;
         }
@@ -148,6 +155,30 @@ export class DependencyScheduler {
 
     if (status !== "SCHEDULED") {
       throw new Error(`Node "${nodeId}" has already reached a terminal state.`);
+    }
+  }
+
+  private validateTransition(
+    nodeId: string,
+    targetStatus: SchedulerNodeStatus,
+  ): void {
+    const currentStatus = this.statuses.get(nodeId);
+
+    if (currentStatus === targetStatus) {
+      return;
+    }
+
+    const terminalStates: SchedulerNodeStatus[] = [
+      "COMPLETED",
+      "FAILED",
+      "SKIPPED",
+      "CANCELLED",
+    ];
+
+    if (currentStatus && terminalStates.includes(currentStatus)) {
+      throw new Error(
+        `Invalid state transition for node "${nodeId}": cannot transition from terminal state "${currentStatus}" to "${targetStatus}".`,
+      );
     }
   }
 }
