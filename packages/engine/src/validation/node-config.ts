@@ -74,11 +74,26 @@ const dataTransformConfigSchema = z
   })
   .strict();
 
+export const conditionConfigSchema = z.object({
+  field: z.string().min(1, "Field path is required"),
+
+  operator: z.enum([
+    "equals",
+    "not_equals",
+    "contains",
+    "greater_than",
+    "less_than",
+  ]),
+
+  value: z.union([z.string(), z.number(), z.boolean()]),
+});
+
 const nodeConfigSchemas = {
   manual_trigger: emptyConfigSchema,
   webhook_trigger: emptyConfigSchema,
   http_request: httpRequestConfigSchema,
   data_transform: dataTransformConfigSchema,
+  condition: conditionConfigSchema,
 } as const;
 
 export function validateNodeConfig(node: WorkflowNode): void {

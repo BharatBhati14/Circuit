@@ -2,7 +2,8 @@ export type WorkflowNodeType =
   | "manual_trigger"
   | "webhook_trigger"
   | "http_request"
-  | "data_transform";
+  | "data_transform"
+  | "condition";
 
 export interface WorkflowNode {
   id: string;
