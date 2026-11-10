@@ -1,4 +1,5 @@
 import type {
+  ExecutionStatus,
   NodeExecutionResult,
   WorkflowExecutionResult,
   WorkflowNode,
@@ -34,10 +35,40 @@ export class WorkflowRunner {
       options.workflow.nodes.map((node) => [node.id, node]),
     );
 
+    // Setup internal AbortController tied to optional external signal
+    const internalController = new AbortController();
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        internalController.abort(options.signal.reason);
+      } else {
+        options.signal.addEventListener(
+          "abort",
+          () => {
+            internalController.abort(options.signal?.reason);
+          },
+          { once: true },
+        );
+      }
+    }
+
+    let workflowCancelled = false;
+
     while (!scheduler.isComplete()) {
+      if (internalController.signal.aborted) {
+        scheduler.cancelPendingNodes();
+        workflowCancelled = true;
+        break;
+      }
+
       const readyNodeIds = scheduler.getReadyNodes(maxConcurrency);
 
       if (readyNodeIds.length === 0) {
+        // If no ready nodes are returned and scheduler isn't complete, check if we're aborted or deadlocked
+        if (internalController.signal.aborted) {
+          scheduler.cancelPendingNodes();
+          workflowCancelled = true;
+        }
         break;
       }
 
@@ -46,6 +77,19 @@ export class WorkflowRunner {
           const nodeStartedAt = new Date().toISOString();
 
           try {
+            // Check abort signal before running individual node
+            if (internalController.signal.aborted) {
+              return {
+                nodeId,
+                result: {
+                  status: "CANCELLED" as const,
+                  reason: "Workflow execution was cancelled.",
+                  startedAt: nodeStartedAt,
+                  finishedAt: new Date().toISOString(),
+                },
+              };
+            }
+
             const node = nodes.get(nodeId);
 
             if (!node) {
@@ -78,6 +122,7 @@ export class WorkflowRunner {
               attempt: 1,
               input: options.input ?? {},
               previousOutputs,
+              signal: internalController.signal, // Pass signal to executor
             });
 
             return { nodeId, result };
@@ -115,8 +160,11 @@ export class WorkflowRunner {
             break;
 
           case "SKIPPED":
-          case "CANCELLED":
             scheduler.markSkipped(nodeId);
+            break;
+
+          case "CANCELLED":
+            scheduler.markCancelled(nodeId);
             break;
         }
       }
@@ -135,18 +183,41 @@ export class WorkflowRunner {
             finishedAt: timestamp,
           };
         }
+      } else if (scheduler.getStatus(node.id) === "CANCELLED") {
+        if (!nodeResults[node.id]) {
+          const timestamp = new Date().toISOString();
+
+          nodeResults[node.id] = {
+            status: "CANCELLED",
+            reason: "Execution was cancelled.",
+            startedAt: timestamp,
+            finishedAt: timestamp,
+          };
+        }
       }
     }
 
     const hasFailures = Object.values(nodeResults).some(
-      (result) => result.status === "FAILED" || result.status === "CANCELLED",
+      (result) => result.status === "FAILED",
     );
+    const hasCancellations =
+      workflowCancelled ||
+      Object.values(nodeResults).some(
+        (result) => result.status === "CANCELLED",
+      );
+
+    let finalStatus: ExecutionStatus = "COMPLETED";
+    if (hasCancellations) {
+      finalStatus = "CANCELLED";
+    } else if (hasFailures) {
+      finalStatus = "FAILED";
+    }
 
     return {
       executionId: options.executionId,
       workflowId: options.workflow.id,
       workflowVersion: options.workflowVersion,
-      status: hasFailures ? "FAILED" : "COMPLETED",
+      status: finalStatus,
       nodeResults,
       startedAt,
       finishedAt: new Date().toISOString(),

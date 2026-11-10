@@ -555,7 +555,7 @@ describe("WorkflowRunner", () => {
         id: "A",
         type: "manual_trigger",
       }),
-      {
+      expect.objectContaining({
         executionId: "execution-123",
         workflowId: "workflow-1",
         workflowVersion: 5,
@@ -563,7 +563,87 @@ describe("WorkflowRunner", () => {
         attempt: 1,
         input,
         previousOutputs: {},
-      },
+        signal: expect.any(AbortSignal),
+      }),
     );
+  });
+
+  it("should return CANCELLED immediately if signal is pre-aborted", async () => {
+    const workflow = createWorkflow(["A", "B"], [createEdge("A", "B")]);
+    const { executor } = createMockExecutor();
+    const runner = new WorkflowRunner(createRegistry(executor));
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-pre-aborted",
+      workflowVersion: 1,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe("CANCELLED");
+    expect(result.nodeResults.A?.status).toBe("CANCELLED");
+    expect(result.nodeResults.B?.status).toBe("CANCELLED");
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("should abort running executors and mark pending nodes as CANCELLED when signal aborts mid-execution", async () => {
+    const workflow = createWorkflow(
+      ["A", "B", "C"],
+      [createEdge("A", "B"), createEdge("B", "C")],
+    );
+
+    let releaseBlock!: () => void;
+    const blockPromise = new Promise<void>((resolve) => {
+      releaseBlock = resolve;
+    });
+
+    const { executor } = createMockExecutor(async (_node, context) => {
+      // Block until aborted or released
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1000);
+        context.signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve(undefined);
+          },
+          { once: true },
+        );
+      });
+
+      if (context.signal?.aborted) {
+        return {
+          status: "CANCELLED" as const,
+          reason: "Execution aborted",
+          startedAt: timestamp,
+          finishedAt: timestamp,
+        };
+      }
+
+      return createSuccessResult();
+    });
+
+    const runner = new WorkflowRunner(createRegistry(executor));
+    const controller = new AbortController();
+
+    // Abort after a short delay
+    setTimeout(() => {
+      controller.abort();
+    }, 20);
+
+    const result = await runner.execute({
+      workflow,
+      executionId: "execution-mid-abort",
+      workflowVersion: 1,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe("CANCELLED");
+    expect(result.nodeResults.A?.status).toBe("CANCELLED");
+    expect(result.nodeResults.B?.status).toBe("CANCELLED");
+    expect(result.nodeResults.C?.status).toBe("CANCELLED");
   });
 });
