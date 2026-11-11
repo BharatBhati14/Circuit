@@ -88,12 +88,19 @@ export const conditionConfigSchema = z.object({
   value: z.union([z.string(), z.number(), z.boolean()]),
 });
 
+export const delayConfigSchema = z.object({
+  durationMs: z
+    .number()
+    .positive("Delay duration must be a positive number of milliseconds"),
+});
+
 const nodeConfigSchemas = {
   manual_trigger: emptyConfigSchema,
   webhook_trigger: emptyConfigSchema,
   http_request: httpRequestConfigSchema,
   data_transform: dataTransformConfigSchema,
   condition: conditionConfigSchema,
+  delay: delayConfigSchema,
 } as const;
 
 export function validateNodeConfig(node: WorkflowNode): void {

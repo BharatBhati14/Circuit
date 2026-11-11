@@ -3,7 +3,8 @@ export type WorkflowNodeType =
   | "webhook_trigger"
   | "http_request"
   | "data_transform"
-  | "condition";
+  | "condition"
+  | "delay";
 
 export interface WorkflowNode {
   id: string;

@@ -9,3 +9,4 @@ export { ExecutorRegistry } from "./runtime/registry.js";
 export { DataTransformExecutor } from "./runtime/executors/data-transform.js";
 export { HttpRequestExecutor } from "./runtime/executors/http-request.js";
 export { ConditionExecutor } from "./runtime/executors/condition.js";
+export { DelayExecutor } from "./runtime/executors/delay.js";
