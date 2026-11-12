@@ -4,7 +4,8 @@
   "private": true,
   "description": "",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts"
   },
   "main": "index.js",
   "scripts": {
