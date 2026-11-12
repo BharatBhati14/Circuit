@@ -1,6 +1,10 @@
 import { Job } from "bullmq";
 import { updateWorkflowExecutionStatus, db } from "@circuit/db";
-import { workflowVersions, nodeExecutions } from "@circuit/db/schema";
+import {
+  workflowVersions,
+  nodeExecutions,
+  workflowExecutions,
+} from "@circuit/db/schema";
 import { eq } from "drizzle-orm";
 import { WorkflowRunner, registerExecutors } from "@circuit/engine";
 
@@ -9,20 +13,45 @@ const registry = registerExecutors();
 const runner = new WorkflowRunner(registry);
 
 interface WorkflowJobData {
-  executionId: string;
+  executionId?: string; // Optional now, since cron jobs are initialized inside the worker
   workflowVersionId: string;
+  triggerType?: "manual" | "webhook" | "cron";
   triggerInput?: Record<string, unknown>;
 }
 
 export async function processWorkflowExecution(job: Job<WorkflowJobData>) {
-  const { executionId, workflowVersionId, triggerInput } = job.data;
-  console.log(`⚙️ Processing execution job: ${executionId}`);
+  let {
+    executionId,
+    workflowVersionId,
+    triggerType = "manual",
+    triggerInput,
+  } = job.data;
+
+  console.log(
+    `⚙️ Processing execution job for version: ${workflowVersionId} (Trigger: ${triggerType})`,
+  );
 
   try {
-    // 1. Transition workflow execution status to RUNNING
+    // 1. If no executionId was pre-created (e.g. Cron trigger), create it now in PostgreSQL
+    if (!executionId) {
+      const [newExecution] = await db
+        .insert(workflowExecutions)
+        .values({
+          workflowVersionId,
+          status: "PENDING",
+        })
+        .returning();
+
+      executionId = newExecution.id;
+      console.log(
+        `📝 Initialized dynamic database execution record: ${executionId}`,
+      );
+    }
+
+    // 2. Transition workflow execution status to RUNNING
     await updateWorkflowExecutionStatus(executionId, "RUNNING");
 
-    // 2. Fetch workflow version and DAG definition from PostgreSQL
+    // 3. Fetch workflow version and DAG definition from PostgreSQL
     const [version] = await db
       .select()
       .from(workflowVersions)
@@ -34,7 +63,7 @@ export async function processWorkflowExecution(job: Job<WorkflowJobData>) {
 
     console.log(`🚀 Executing workflow DAG for version: ${workflowVersionId}`);
 
-    // 3. Run the workflow via the core engine WorkflowRunner, passing trigger input if present
+    // 4. Run the workflow via the core engine WorkflowRunner, passing trigger input if present
     const result = await runner.execute({
       executionId,
       workflowVersion: version.version,
@@ -43,7 +72,7 @@ export async function processWorkflowExecution(job: Job<WorkflowJobData>) {
       input: triggerInput || {},
     });
 
-    // 4. Persist node execution results into the node_executions audit table
+    // 5. Persist node execution results into the node_executions audit table
     for (const [nodeId, nodeResult] of Object.entries(result.nodeResults)) {
       await db.insert(nodeExecutions).values({
         executionId,
@@ -57,7 +86,7 @@ export async function processWorkflowExecution(job: Job<WorkflowJobData>) {
       });
     }
 
-    // 5. Update final execution status based on engine result
+    // 6. Update final execution status based on engine result
     const terminalStatus =
       result.status === "QUEUED" ? "COMPLETED" : result.status;
     await updateWorkflowExecutionStatus(executionId, terminalStatus as any);
@@ -66,8 +95,12 @@ export async function processWorkflowExecution(job: Job<WorkflowJobData>) {
       `✅ Completed execution ${executionId} with status: ${terminalStatus}`,
     );
   } catch (error) {
-    console.error(`❌ Failed execution ${executionId}:`, error);
-    await updateWorkflowExecutionStatus(executionId, "FAILED");
+    if (executionId) {
+      console.error(`❌ Failed execution ${executionId}:`, error);
+      await updateWorkflowExecutionStatus(executionId, "FAILED");
+    } else {
+      console.error(`❌ Failed execution before record creation:`, error);
+    }
     throw error;
   }
 }

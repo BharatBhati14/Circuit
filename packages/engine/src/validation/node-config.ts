@@ -97,6 +97,7 @@ export const delayConfigSchema = z.object({
 const nodeConfigSchemas = {
   manual_trigger: emptyConfigSchema,
   webhook_trigger: emptyConfigSchema,
+  schedule_trigger: emptyConfigSchema,
   http_request: httpRequestConfigSchema,
   data_transform: dataTransformConfigSchema,
   condition: conditionConfigSchema,

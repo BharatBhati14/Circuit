@@ -9,6 +9,10 @@ export { registerExecutors } from "./runtime/register-executors.js";
 
 export { WorkflowRunner } from "./runtime/workflow-runner/workflow-runner.js";
 
+export { TriggerExecutor } from "./runtime/executors/trigger.js";
+export { WebhookTriggerExecutor } from "./runtime/executors/webhook-trigger.js";
+export { CronTriggerExecutor } from "./runtime/executors/cron-schedule-trigger.js";
+
 export { DataTransformExecutor } from "./runtime/executors/data-transform.js";
 export { HttpRequestExecutor } from "./runtime/executors/http-request.js";
 export { ConditionExecutor } from "./runtime/executors/condition.js";

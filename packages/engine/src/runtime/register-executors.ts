@@ -5,12 +5,14 @@ import { ConditionExecutor } from "./executors/condition.js";
 import { DelayExecutor } from "./executors/delay.js";
 import { TriggerExecutor } from "./executors/trigger.js";
 import { WebhookTriggerExecutor } from "./executors/webhook-trigger.js";
+import { CronTriggerExecutor } from "./executors/cron-schedule-trigger.js";
 
 export function registerExecutors(): ExecutorRegistry {
   const registry = new ExecutorRegistry();
 
   registry.register(new TriggerExecutor("manual_trigger"));
   registry.register(new WebhookTriggerExecutor());
+  registry.register(new CronTriggerExecutor());
 
   // Register all built-in node executors
   registry.register(new HttpRequestExecutor());

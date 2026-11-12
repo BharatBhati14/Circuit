@@ -1,10 +1,16 @@
 export type WorkflowNodeType =
   | "manual_trigger"
   | "webhook_trigger"
+  | "schedule_trigger"
   | "http_request"
   | "data_transform"
   | "condition"
   | "delay";
+
+export interface ScheduleTriggerConfig {
+  cron: string; // Standard cron expression (e.g., "0 * * * *" or "*/15 * * * *")
+  timezone?: string; // IANA timezone string (e.g., "UTC", "America/New_York")
+}
 
 export interface WorkflowNode {
   id: string;

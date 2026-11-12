@@ -4,7 +4,10 @@ import {
   createWorkflowExecution,
 } from "@circuit/db";
 import { workflowQueue } from "../queues/workflow.queue.js";
+import { WorkflowSchedulerService } from "../services/scheduler.service.js";
 import type { WorkflowDefinition } from "@circuit/contracts";
+
+const schedulerService = new WorkflowSchedulerService(workflowQueue);
 
 export async function workflowRoutes(fastify: FastifyInstance) {
   // 1. Create a Workflow with initial version & DAG definition
@@ -21,6 +24,10 @@ export async function workflowRoutes(fastify: FastifyInstance) {
         body.description,
         body.definition,
       );
+
+      // Synchronize schedule triggers with BullMQ Job Schedulers
+      await schedulerService.syncWorkflowSchedules(version.id, body.definition);
+
       return reply.status(201).send({ success: true, workflow, version });
     } catch (error) {
       fastify.log.error(error);
@@ -55,7 +62,7 @@ export async function workflowRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // #########################################
+  // #################========================
 
   // Webhook Route Handler for Fastify
   fastify.post("/webhooks/:versionId", async (request, reply) => {
