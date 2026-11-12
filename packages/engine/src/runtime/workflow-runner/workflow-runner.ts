@@ -114,13 +114,29 @@ export class WorkflowRunner {
 
             const executor = this.registry.get(node.type);
 
+            let nodeInput = options.input ?? {};
+            const incomingEdges = options.workflow.edges.filter(
+              (e) => e.target === nodeId,
+            );
+
+            if (incomingEdges.length > 0) {
+              // For nodes with dependencies, combine or take upstream outputs as input
+              // If single dependency, pass that dependency's output directly so $.body works!
+              const firstDependencyOutput = nodeOutputs.get(
+                incomingEdges[0].source,
+              );
+              if (firstDependencyOutput) {
+                nodeInput = firstDependencyOutput;
+              }
+            }
+
             const result = await executor.execute(node, {
               executionId: options.executionId,
               workflowId: options.workflow.id,
               workflowVersion: options.workflowVersion,
               nodeId: node.id,
               attempt: 1,
-              input: options.input ?? {},
+              input: nodeInput,
               previousOutputs,
               signal: internalController.signal, // Pass signal to executor
             });
