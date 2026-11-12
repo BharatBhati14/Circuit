@@ -175,4 +175,30 @@ describe("DataTransformExecutor", () => {
       expect(result.error.code).toBe("INVALID_DATA_PATH");
     }
   });
+
+  it("resolves array bracket index paths", async () => {
+    const result = await executor.execute(
+      createNode({
+        mappings: {
+          firstItemName: "$.items[0].name",
+          secondItemPrice: "$.items[1].price",
+        },
+      }),
+      createContext({
+        items: [
+          { name: "Widget A", price: 10 },
+          { name: "Widget B", price: 20 },
+        ],
+      }),
+    );
+
+    expect(result.status).toBe("SUCCESS");
+
+    if (result.status === "SUCCESS") {
+      expect(result.output).toEqual({
+        firstItemName: "Widget A",
+        secondItemPrice: 20,
+      });
+    }
+  });
 });

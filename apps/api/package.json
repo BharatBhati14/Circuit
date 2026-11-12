@@ -10,8 +10,14 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@circuit/config": "workspace:*",
     "@circuit/contracts": "workspace:*",
-    "fastify": "^5.12.7"
+    "@circuit/db": "workspace:*",
+    "@circuit/engine": "workspace:*",
+    "bullmq": "^6.3.15",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.7",
+    "ioredis": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

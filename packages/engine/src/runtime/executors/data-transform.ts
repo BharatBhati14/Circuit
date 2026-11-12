@@ -23,7 +23,9 @@ function resolveInputPath(
   path: string,
   input: Record<string, unknown>,
 ): unknown {
-  const segments = path.slice(2).split(".");
+  // Normalize bracket notation like "[0]" into ".0" before splitting
+  const normalizedPath = path.slice(2).replace(/\[(\d+)\]/g, ".$1");
+  const segments = normalizedPath.split(".");
 
   if (
     segments.length === 0 ||
@@ -40,19 +42,31 @@ function resolveInputPath(
   let current: unknown = input;
 
   for (const segment of segments) {
-    if (
-      current === null ||
-      typeof current !== "object" ||
-      Array.isArray(current) ||
-      !Object.prototype.hasOwnProperty.call(current, segment)
-    ) {
+    if (current === null || typeof current !== "object") {
       throw new DataPathResolutionError(
         `Data path "${path}" could not be resolved.`,
         "DATA_PATH_NOT_FOUND",
       );
     }
 
-    current = (current as Record<string, unknown>)[segment];
+    if (Array.isArray(current)) {
+      const index = Number(segment);
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+        throw new DataPathResolutionError(
+          `Data path "${path}" could not be resolved.`,
+          "DATA_PATH_NOT_FOUND",
+        );
+      }
+      current = current[index];
+    } else {
+      if (!Object.prototype.hasOwnProperty.call(current, segment)) {
+        throw new DataPathResolutionError(
+          `Data path "${path}" could not be resolved.`,
+          "DATA_PATH_NOT_FOUND",
+        );
+      }
+      current = (current as Record<string, unknown>)[segment];
+    }
   }
 
   if (current === undefined) {
