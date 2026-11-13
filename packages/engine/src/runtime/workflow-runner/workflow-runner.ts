@@ -3,12 +3,25 @@ import type {
   NodeExecutionResult,
   WorkflowExecutionResult,
   WorkflowNode,
+  NodeExecutionContext,
 } from "@circuit/contracts";
 
 import { validateWorkflow } from "../../validation/workflow.js";
 import { DependencyScheduler } from "../scheduler/dependency-scheduler.js";
 import type { ExecutorRegistry } from "../registry.js";
 import type { WorkflowRunnerOptions } from "./types.js";
+
+type WorkflowEdge = {
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  handle?: string;
+};
+
+type LoopItemContext = {
+  item: unknown;
+  index: number;
+};
 
 export class WorkflowRunner {
   constructor(private readonly registry: ExecutorRegistry) {}
@@ -17,7 +30,6 @@ export class WorkflowRunner {
     options: WorkflowRunnerOptions,
   ): Promise<WorkflowExecutionResult> {
     const startedAt = new Date().toISOString();
-
     const maxConcurrency = options.maxConcurrency ?? 5;
 
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
@@ -35,7 +47,20 @@ export class WorkflowRunner {
       options.workflow.nodes.map((node) => [node.id, node]),
     );
 
-    // Setup internal AbortController tied to optional external signal.
+    const edges = options.workflow.edges as WorkflowEdge[];
+
+    // Identify nodes directly connected to loop nodes.
+    // These nodes are executed exclusively by executeLoopBody().
+    const loopBodyNodeIds = new Set<string>();
+
+    for (const edge of edges) {
+      const sourceNode = nodes.get(edge.source);
+
+      if (sourceNode?.type === "loop") {
+        loopBodyNodeIds.add(edge.target);
+      }
+    }
+
     const internalController = new AbortController();
 
     if (options.signal) {
@@ -44,9 +69,7 @@ export class WorkflowRunner {
       } else {
         options.signal.addEventListener(
           "abort",
-          () => {
-            internalController.abort(options.signal?.reason);
-          },
+          () => internalController.abort(options.signal?.reason),
           { once: true },
         );
       }
@@ -61,14 +84,36 @@ export class WorkflowRunner {
         break;
       }
 
-      const readyNodeIds = scheduler.getReadyNodes(maxConcurrency);
+      const readyNodeIds = scheduler
+        .getReadyNodes(maxConcurrency)
+        .filter((nodeId) => !loopBodyNodeIds.has(nodeId));
 
       if (readyNodeIds.length === 0) {
         if (internalController.signal.aborted) {
           scheduler.cancelPendingNodes();
           workflowCancelled = true;
         }
-        break;
+
+        // Loop body nodes are handled by their parent loop.
+        // If only loop body nodes remain, mark them as completed
+        // because their actual executions have already been handled.
+        for (const nodeId of loopBodyNodeIds) {
+          if (scheduler.getStatus(nodeId) === "SCHEDULED") {
+            scheduler.markCompleted(nodeId);
+          }
+        }
+
+        if (scheduler.isComplete()) {
+          break;
+        }
+
+        const remainingReady = scheduler.getReadyNodes(maxConcurrency);
+
+        if (remainingReady.length === 0) {
+          break;
+        }
+
+        continue;
       }
 
       const batchResults = await Promise.all(
@@ -94,41 +139,38 @@ export class WorkflowRunner {
               throw new Error(`Workflow node "${nodeId}" was not found.`);
             }
 
+            const incomingEdges = edges.filter(
+              (edge) => edge.target === nodeId,
+            );
+
             const previousOutputs = Object.fromEntries(
-              options.workflow.edges
-                .filter((edge) => edge.target === nodeId)
-                .map((edge) => {
-                  const output = nodeOutputs.get(edge.source);
+              incomingEdges.map((edge) => {
+                const output = nodeOutputs.get(edge.source);
 
-                  if (!output) {
-                    throw new Error(
-                      `Output for dependency "${edge.source}" is missing.`,
-                    );
-                  }
+                if (!output) {
+                  throw new Error(
+                    `Output for dependency "${edge.source}" is missing.`,
+                  );
+                }
 
-                  return [edge.source, output];
-                }),
+                return [edge.source, output];
+              }),
             );
 
             const executor = this.registry.get(node.type);
 
-            let nodeInput = options.input ?? {};
-
-            const incomingEdges = options.workflow.edges.filter(
-              (edge) => edge.target === nodeId,
-            );
+            let nodeInput: Record<string, unknown> = options.input ?? {};
 
             if (incomingEdges.length > 0) {
-              const firstDependencyOutput = nodeOutputs.get(
-                incomingEdges[0].source,
-              );
+              const firstEdge = incomingEdges[0];
+              const dependencyOutput = nodeOutputs.get(firstEdge.source);
 
-              if (firstDependencyOutput) {
-                nodeInput = firstDependencyOutput;
+              if (dependencyOutput) {
+                nodeInput = dependencyOutput;
               }
             }
 
-            const result = await executor.execute(node, {
+            const context: NodeExecutionContext = {
               executionId: options.executionId,
               workflowId: options.workflow.id,
               workflowVersion: options.workflowVersion,
@@ -137,7 +179,9 @@ export class WorkflowRunner {
               input: nodeInput,
               previousOutputs,
               signal: internalController.signal,
-            });
+            };
+
+            const result = await executor.execute(node, context);
 
             return { nodeId, result };
           } catch (error) {
@@ -170,30 +214,28 @@ export class WorkflowRunner {
 
             const completedNode = nodes.get(nodeId);
 
-            // Handle condition branching and unchosen path skipping.
+            // Conditional branching.
             if (
               completedNode?.type === "condition" &&
-              result.output &&
               typeof result.output.matched === "boolean"
             ) {
               const matched = result.output.matched;
 
-              const outgoingEdges = options.workflow.edges.filter(
+              const outgoingEdges = edges.filter(
                 (edge) => edge.source === nodeId,
               );
 
               for (const edge of outgoingEdges) {
-                const edgeHandle =
-                  (edge as any).sourceHandle ?? (edge as any).handle;
+                const edgeHandle = edge.sourceHandle ?? edge.handle;
 
-                if (edgeHandle !== undefined && edgeHandle !== null) {
+                if (edgeHandle != null) {
                   const shouldTakeBranch =
                     String(edgeHandle) === String(matched);
 
                   if (!shouldTakeBranch) {
                     this.skipNodeAndDownstream(
                       edge.target,
-                      options.workflow.edges,
+                      edges,
                       scheduler,
                       nodeResults,
                       nodeOutputs,
@@ -203,26 +245,36 @@ export class WorkflowRunner {
               }
             }
 
-            // Handle loop node completion and iteration setup.
+            // Execute loop body once per item.
             if (
               completedNode?.type === "loop" &&
-              result.output &&
               Array.isArray(result.output.items)
             ) {
               const items = result.output.items as unknown[];
 
-              const batchSize =
+              const configuredBatchSize =
                 (completedNode.config as { batchSize?: number })?.batchSize ??
                 1;
 
-              if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+              if (
+                !Number.isSafeInteger(configuredBatchSize) ||
+                configuredBatchSize < 1
+              ) {
                 throw new Error(
                   `Invalid batchSize configured for loop "${nodeId}".`,
                 );
               }
 
-              console.log(
-                `Loop node "${nodeId}" processed ${items.length} items (batchSize: ${batchSize})`,
+              await this.executeLoopBody(
+                nodeId,
+                items,
+                configuredBatchSize,
+                options,
+                nodes,
+                edges,
+                nodeOutputs,
+                internalController.signal,
+                maxConcurrency,
               );
             }
 
@@ -244,31 +296,30 @@ export class WorkflowRunner {
       }
     }
 
-    // Record nodes skipped by dependency failure propagation
-    // or condition branching.
+    // Record automatically skipped and cancelled nodes.
     for (const node of options.workflow.nodes) {
-      if (scheduler.getStatus(node.id) === "SKIPPED") {
-        if (!nodeResults[node.id]) {
-          const timestamp = new Date().toISOString();
+      const status = scheduler.getStatus(node.id);
 
-          nodeResults[node.id] = {
-            status: "SKIPPED",
-            reason: "A dependency failed or was skipped.",
-            startedAt: timestamp,
-            finishedAt: timestamp,
-          };
-        }
-      } else if (scheduler.getStatus(node.id) === "CANCELLED") {
-        if (!nodeResults[node.id]) {
-          const timestamp = new Date().toISOString();
+      if (status === "SKIPPED" && !nodeResults[node.id]) {
+        const timestamp = new Date().toISOString();
 
-          nodeResults[node.id] = {
-            status: "CANCELLED",
-            reason: "Execution was cancelled.",
-            startedAt: timestamp,
-            finishedAt: timestamp,
-          };
-        }
+        nodeResults[node.id] = {
+          status: "SKIPPED",
+          reason: "A dependency failed or was skipped.",
+          startedAt: timestamp,
+          finishedAt: timestamp,
+        };
+      }
+
+      if (status === "CANCELLED" && !nodeResults[node.id]) {
+        const timestamp = new Date().toISOString();
+
+        nodeResults[node.id] = {
+          status: "CANCELLED",
+          reason: "Execution was cancelled.",
+          startedAt: timestamp,
+          finishedAt: timestamp,
+        };
       }
     }
 
@@ -301,10 +352,139 @@ export class WorkflowRunner {
     };
   }
 
-  // Recursively skip unchosen conditional branches.
+  /**
+   * Executes direct loop-body nodes once for every item.
+   *
+   * Each iteration receives its own $item and $index context.
+   * Batch size controls how many items are processed in a batch.
+   */
+  private async executeLoopBody(
+    loopNodeId: string,
+    items: unknown[],
+    batchSize: number,
+    options: WorkflowRunnerOptions,
+    nodes: Map<string, WorkflowNode>,
+    edges: WorkflowEdge[],
+    nodeOutputs: Map<string, Record<string, unknown>>,
+    signal: AbortSignal,
+    maxConcurrency: number,
+  ): Promise<void> {
+    const outgoingEdges = edges.filter((edge) => edge.source === loopNodeId);
+
+    if (outgoingEdges.length === 0 || items.length === 0) {
+      return;
+    }
+
+    const bodyNodeIds = outgoingEdges.map((edge) => edge.target);
+
+    for (let offset = 0; offset < items.length; offset += batchSize) {
+      if (signal.aborted) {
+        throw new Error("Loop execution was cancelled.");
+      }
+
+      const batch = items.slice(offset, offset + batchSize);
+
+      for (
+        let batchOffset = 0;
+        batchOffset < batch.length;
+        batchOffset += maxConcurrency
+      ) {
+        if (signal.aborted) {
+          throw new Error("Loop execution was cancelled.");
+        }
+
+        const concurrentItems = batch.slice(
+          batchOffset,
+          batchOffset + maxConcurrency,
+        );
+
+        const executions = concurrentItems.flatMap((item, index) => {
+          const globalIndex = offset + batchOffset + index;
+
+          return bodyNodeIds.map(async (bodyNodeId) => {
+            if (signal.aborted) {
+              throw new Error("Loop execution was cancelled.");
+            }
+
+            const bodyNode = nodes.get(bodyNodeId);
+
+            if (!bodyNode) {
+              throw new Error(`Loop body node "${bodyNodeId}" was not found.`);
+            }
+
+            const executor = this.registry.get(bodyNode.type);
+
+            const itemContext: LoopItemContext = {
+              item,
+              index: globalIndex,
+            };
+
+            const incomingEdges = edges.filter(
+              (edge) => edge.target === bodyNodeId,
+            );
+
+            const previousOutputs: Record<string, unknown> = {};
+
+            for (const edge of incomingEdges) {
+              if (edge.source === loopNodeId) {
+                previousOutputs[edge.source] = {
+                  item,
+                  index: globalIndex,
+                  $item: item,
+                  $index: globalIndex,
+                };
+              } else {
+                const output = nodeOutputs.get(edge.source);
+
+                if (output) {
+                  previousOutputs[edge.source] = output;
+                }
+              }
+            }
+
+            const nodeInput: Record<string, unknown> = {
+              ...(options.input ?? {}),
+              $item: itemContext.item,
+              $index: itemContext.index,
+            };
+
+            const context: NodeExecutionContext = {
+              executionId: options.executionId,
+              workflowId: options.workflow.id,
+              workflowVersion: options.workflowVersion,
+              nodeId: bodyNode.id,
+              attempt: 1,
+              input: nodeInput,
+              previousOutputs,
+              signal,
+            };
+
+            const result = await executor.execute(bodyNode, context);
+
+            if (result.status !== "SUCCESS") {
+              throw new Error(
+                result.status === "FAILED"
+                  ? result.error.message
+                  : `Loop body node "${bodyNodeId}" did not complete successfully.`,
+              );
+            }
+
+            // Preserve iteration-specific outputs.
+            nodeOutputs.set(`${bodyNodeId}_item_${globalIndex}`, result.output);
+          });
+        });
+
+        await Promise.all(executions);
+      }
+    }
+  }
+
+  /**
+   * Recursively skips unchosen conditional branches.
+   */
   private skipNodeAndDownstream(
     nodeId: string,
-    edges: Array<{ source: string; target: string }>,
+    edges: WorkflowEdge[],
     scheduler: DependencyScheduler,
     nodeResults: Record<string, NodeExecutionResult>,
     nodeOutputs: Map<string, Record<string, unknown>>,
@@ -331,7 +511,6 @@ export class WorkflowRunner {
     };
 
     scheduler.markBranchSkipped(nodeId);
-
     nodeOutputs.set(nodeId, { skipped: true });
 
     const outgoing = edges.filter((edge) => edge.source === nodeId);
