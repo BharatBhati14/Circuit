@@ -2,9 +2,12 @@ import type {
   NodeExecutionContext,
   NodeExecutionResult,
   WorkflowNode,
+  ConditionRule,
 } from "@circuit/contracts";
+
 import type { NodeExecutor } from "../types.js";
 import { InvalidWorkflowError } from "../../errors.js";
+
 import {
   conditionConfigSchema,
   validateNodeConfig,
@@ -26,17 +29,10 @@ export class ConditionExecutor implements NodeExecutor {
         );
       }
 
-      // Check if cancellation was requested before running
       if (context.signal?.aborted) {
-        const reason = context.signal.reason;
         return {
           status: "CANCELLED",
-          reason:
-            reason instanceof Error
-              ? reason.message
-              : typeof reason === "string"
-                ? reason
-                : "Execution was cancelled.",
+          reason: "Execution was cancelled.",
           startedAt,
           finishedAt: new Date().toISOString(),
         };
@@ -51,7 +47,7 @@ export class ConditionExecutor implements NodeExecutor {
           status: "FAILED",
           error: {
             code: "INVALID_NODE_CONFIG",
-            message: `Invalid condition configuration: ${parsedConfig.error.message}`,
+            message: parsedConfig.error.message,
             retryable: false,
           },
           startedAt,
@@ -59,63 +55,28 @@ export class ConditionExecutor implements NodeExecutor {
         };
       }
 
-      const { field, operator, value: targetValue } = parsedConfig.data;
+      const { rules, logicalOperator = "AND" } = parsedConfig.data;
 
-      // Helper to resolve dotted path (e.g., "$.http_request.status") from previousOutputs
-      const resolvedValue = resolveFieldPath(field, context.previousOutputs);
+      const ruleResults = rules.map((rule) =>
+        evaluateRule(rule, context.previousOutputs),
+      );
 
-      let matched = false;
-      switch (operator) {
-        case "equals":
-          matched = resolvedValue === targetValue;
-          break;
-        case "not_equals":
-          matched = resolvedValue !== targetValue;
-          break;
-        case "contains":
-          matched =
-            typeof resolvedValue === "string" &&
-            typeof targetValue === "string" &&
-            resolvedValue.includes(targetValue);
-          break;
-        case "greater_than":
-          matched =
-            typeof resolvedValue === "number" &&
-            typeof targetValue === "number" &&
-            resolvedValue > targetValue;
-          break;
-        case "less_than":
-          matched =
-            typeof resolvedValue === "number" &&
-            typeof targetValue === "number" &&
-            resolvedValue < targetValue;
-          break;
-      }
+      const matched =
+        logicalOperator === "AND"
+          ? ruleResults.every(Boolean)
+          : ruleResults.some(Boolean);
 
       return {
         status: "SUCCESS",
-        output: { matched, resolvedValue },
+        output: {
+          matched,
+          ruleResults,
+          logicalOperator,
+        },
         startedAt,
         finishedAt: new Date().toISOString(),
       };
     } catch (error) {
-      const finishedAt = new Date().toISOString();
-
-      if (context.signal?.aborted) {
-        const reason = context.signal.reason;
-        return {
-          status: "CANCELLED",
-          reason:
-            reason instanceof Error
-              ? reason.message
-              : typeof reason === "string"
-                ? reason
-                : "Execution was cancelled.",
-          startedAt,
-          finishedAt,
-        };
-      }
-
       return {
         status: "FAILED",
         error: {
@@ -127,23 +88,67 @@ export class ConditionExecutor implements NodeExecutor {
           retryable: false,
         },
         startedAt,
-        finishedAt,
+        finishedAt: new Date().toISOString(),
       };
     }
   }
 }
 
-// Simple path resolver for nested objects (e.g. $.nodeId.propertyName)
+function evaluateRule(
+  rule: ConditionRule,
+  previousOutputs: Record<string, unknown>,
+): boolean {
+  const resolvedValue = resolveFieldPath(rule.field, previousOutputs);
+
+  switch (rule.operator) {
+    case "equals":
+      return resolvedValue === rule.value;
+
+    case "not_equals":
+      return resolvedValue !== rule.value;
+
+    case "contains":
+      return (
+        typeof resolvedValue === "string" &&
+        typeof rule.value === "string" &&
+        resolvedValue.includes(rule.value)
+      );
+
+    case "greater_than":
+      return (
+        typeof resolvedValue === "number" &&
+        typeof rule.value === "number" &&
+        resolvedValue > rule.value
+      );
+
+    case "less_than":
+      return (
+        typeof resolvedValue === "number" &&
+        typeof rule.value === "number" &&
+        resolvedValue < rule.value
+      );
+
+    default:
+      return false;
+  }
+}
+
 function resolveFieldPath(
   path: string,
   previousOutputs: Record<string, unknown>,
 ): unknown {
   const cleanPath = path.startsWith("$.") ? path.slice(2) : path;
+
   const parts = cleanPath.split(".");
+
   let current: unknown = previousOutputs;
 
   for (const part of parts) {
-    if (current && typeof current === "object" && part in current) {
+    if (
+      current !== null &&
+      typeof current === "object" &&
+      Object.prototype.hasOwnProperty.call(current, part)
+    ) {
       current = (current as Record<string, unknown>)[part];
     } else {
       return undefined;

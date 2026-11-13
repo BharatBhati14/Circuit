@@ -35,6 +35,25 @@ export interface WorkflowDefinition {
   edges: WorkflowEdge[];
 }
 
+// condition node
+export type ComparisonOperator =
+  | "equals"
+  | "not_equals"
+  | "contains"
+  | "greater_than"
+  | "less_than";
+
+export interface ConditionRule {
+  field: string; // Key/path to evaluate from upstream outputs (e.g. "status" or "body.code")
+  operator: ComparisonOperator;
+  value: string | number | boolean;
+}
+
+export interface ConditionConfig {
+  rules: ConditionRule[];
+  logicalOperator?: "AND" | "OR"; // Default to AND if omitted
+}
+
 export type ExecutionStatus =
   | "QUEUED"
   | "RUNNING"

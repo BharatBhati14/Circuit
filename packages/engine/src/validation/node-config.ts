@@ -74,7 +74,7 @@ const dataTransformConfigSchema = z
   })
   .strict();
 
-export const conditionConfigSchema = z.object({
+export const conditionRuleSchema = z.object({
   field: z.string().min(1, "Field path is required"),
 
   operator: z.enum([
@@ -86,6 +86,12 @@ export const conditionConfigSchema = z.object({
   ]),
 
   value: z.union([z.string(), z.number(), z.boolean()]),
+});
+
+export const conditionConfigSchema = z.object({
+  rules: z.array(conditionRuleSchema).min(1, "At least one rule is required"),
+
+  logicalOperator: z.enum(["AND", "OR"]).default("AND"),
 });
 
 export const delayConfigSchema = z.object({

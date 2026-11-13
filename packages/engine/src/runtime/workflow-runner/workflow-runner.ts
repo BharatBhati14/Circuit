@@ -64,7 +64,6 @@ export class WorkflowRunner {
       const readyNodeIds = scheduler.getReadyNodes(maxConcurrency);
 
       if (readyNodeIds.length === 0) {
-        // If no ready nodes are returned and scheduler isn't complete, check if we're aborted or deadlocked
         if (internalController.signal.aborted) {
           scheduler.cancelPendingNodes();
           workflowCancelled = true;
@@ -77,7 +76,6 @@ export class WorkflowRunner {
           const nodeStartedAt = new Date().toISOString();
 
           try {
-            // Check abort signal before running individual node
             if (internalController.signal.aborted) {
               return {
                 nodeId,
@@ -120,8 +118,6 @@ export class WorkflowRunner {
             );
 
             if (incomingEdges.length > 0) {
-              // For nodes with dependencies, combine or take upstream outputs as input
-              // If single dependency, pass that dependency's output directly so $.body works!
               const firstDependencyOutput = nodeOutputs.get(
                 incomingEdges[0].source,
               );
@@ -138,7 +134,7 @@ export class WorkflowRunner {
               attempt: 1,
               input: nodeInput,
               previousOutputs,
-              signal: internalController.signal, // Pass signal to executor
+              signal: internalController.signal,
             });
 
             return { nodeId, result };
@@ -169,6 +165,37 @@ export class WorkflowRunner {
           case "SUCCESS":
             scheduler.markCompleted(nodeId);
             nodeOutputs.set(nodeId, result.output);
+
+            // Handle condition branching & unchosen path skipping
+            const completedNode = nodes.get(nodeId);
+            if (
+              completedNode?.type === "condition" &&
+              result.output &&
+              typeof result.output.matched === "boolean"
+            ) {
+              const matched = result.output.matched;
+              const outgoingEdges = options.workflow.edges.filter(
+                (e) => e.source === nodeId,
+              );
+
+              for (const edge of outgoingEdges) {
+                const edgeHandle =
+                  (edge as any).sourceHandle ?? (edge as any).handle;
+                if (edgeHandle !== undefined && edgeHandle !== null) {
+                  const shouldTakeBranch =
+                    String(edgeHandle) === String(matched);
+                  if (!shouldTakeBranch) {
+                    this.skipNodeAndDownstream(
+                      edge.target,
+                      options.workflow.edges,
+                      scheduler,
+                      nodeResults,
+                      nodeOutputs,
+                    );
+                  }
+                }
+              }
+            }
             break;
 
           case "FAILED":
@@ -186,7 +213,7 @@ export class WorkflowRunner {
       }
     }
 
-    // Record nodes skipped by dependency failure propagation.
+    // Record nodes skipped by dependency failure propagation or condition branching.
     for (const node of options.workflow.nodes) {
       if (scheduler.getStatus(node.id) === "SKIPPED") {
         if (!nodeResults[node.id]) {
@@ -238,5 +265,50 @@ export class WorkflowRunner {
       startedAt,
       finishedAt: new Date().toISOString(),
     };
+  }
+
+  private skipNodeAndDownstream(
+    nodeId: string,
+    edges: Array<{ source: string; target: string }>,
+    scheduler: DependencyScheduler,
+    nodeResults: Record<string, NodeExecutionResult>,
+    nodeOutputs: Map<string, Record<string, unknown>>,
+  ): void {
+    if (nodeResults[nodeId]) return;
+
+    const currentStatus = scheduler.getStatus(nodeId);
+
+    if (
+      currentStatus === "COMPLETED" ||
+      currentStatus === "FAILED" ||
+      currentStatus === "CANCELLED"
+    ) {
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+
+    nodeResults[nodeId] = {
+      status: "SKIPPED",
+      reason: "Condition branch not taken.",
+      startedAt: timestamp,
+      finishedAt: timestamp,
+    };
+
+    scheduler.markBranchSkipped(nodeId);
+
+    nodeOutputs.set(nodeId, { skipped: true });
+
+    const outgoing = edges.filter((edge) => edge.source === nodeId);
+
+    for (const edge of outgoing) {
+      this.skipNodeAndDownstream(
+        edge.target,
+        edges,
+        scheduler,
+        nodeResults,
+        nodeOutputs,
+      );
+    }
   }
 }
