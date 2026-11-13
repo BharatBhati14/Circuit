@@ -5,7 +5,8 @@ export type WorkflowNodeType =
   | "http_request"
   | "data_transform"
   | "condition"
-  | "delay";
+  | "delay"
+  | "loop";
 
 export interface ScheduleTriggerConfig {
   cron: string; // Standard cron expression (e.g., "0 * * * *" or "*/15 * * * *")
@@ -53,6 +54,14 @@ export interface ConditionConfig {
   rules: ConditionRule[];
   logicalOperator?: "AND" | "OR"; // Default to AND if omitted
 }
+
+// loop node
+export interface LoopConfig {
+  itemsPath: string; // Dotted path pointing to the array to iterate (e.g. "$.http_request.body.users")
+  batchSize?: number; // Optional concurrency limit for processing items (default to 1 or sequential)
+}
+
+// ####################
 
 export type ExecutionStatus =
   | "QUEUED"

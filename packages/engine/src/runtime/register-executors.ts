@@ -6,6 +6,7 @@ import { DelayExecutor } from "./executors/delay.js";
 import { TriggerExecutor } from "./executors/trigger.js";
 import { WebhookTriggerExecutor } from "./executors/webhook-trigger.js";
 import { CronTriggerExecutor } from "./executors/cron-schedule-trigger.js";
+import { LoopExecutor } from "./executors/loop.executor.js";
 
 export function registerExecutors(): ExecutorRegistry {
   const registry = new ExecutorRegistry();
@@ -19,6 +20,7 @@ export function registerExecutors(): ExecutorRegistry {
   registry.register(new DataTransformExecutor());
   registry.register(new ConditionExecutor());
   registry.register(new DelayExecutor());
+  registry.register(new LoopExecutor());
 
   return registry;
 }

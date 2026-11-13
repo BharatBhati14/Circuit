@@ -100,6 +100,13 @@ export const delayConfigSchema = z.object({
     .positive("Delay duration must be a positive number of milliseconds"),
 });
 
+export const loopConfigSchema = z.object({
+  itemsPath: z
+    .string()
+    .min(1, "Items path is required (e.g. $.nodeId.arrayField)"),
+  batchSize: z.number().int().positive().optional().default(1),
+});
+
 const nodeConfigSchemas = {
   manual_trigger: emptyConfigSchema,
   webhook_trigger: emptyConfigSchema,
@@ -108,6 +115,7 @@ const nodeConfigSchemas = {
   data_transform: dataTransformConfigSchema,
   condition: conditionConfigSchema,
   delay: delayConfigSchema,
+  loop: loopConfigSchema,
 } as const;
 
 export function validateNodeConfig(node: WorkflowNode): void {

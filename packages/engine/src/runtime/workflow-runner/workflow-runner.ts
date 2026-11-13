@@ -35,7 +35,7 @@ export class WorkflowRunner {
       options.workflow.nodes.map((node) => [node.id, node]),
     );
 
-    // Setup internal AbortController tied to optional external signal
+    // Setup internal AbortController tied to optional external signal.
     const internalController = new AbortController();
 
     if (options.signal) {
@@ -113,14 +113,16 @@ export class WorkflowRunner {
             const executor = this.registry.get(node.type);
 
             let nodeInput = options.input ?? {};
+
             const incomingEdges = options.workflow.edges.filter(
-              (e) => e.target === nodeId,
+              (edge) => edge.target === nodeId,
             );
 
             if (incomingEdges.length > 0) {
               const firstDependencyOutput = nodeOutputs.get(
                 incomingEdges[0].source,
               );
+
               if (firstDependencyOutput) {
                 nodeInput = firstDependencyOutput;
               }
@@ -162,28 +164,32 @@ export class WorkflowRunner {
         nodeResults[nodeId] = result;
 
         switch (result.status) {
-          case "SUCCESS":
+          case "SUCCESS": {
             scheduler.markCompleted(nodeId);
             nodeOutputs.set(nodeId, result.output);
 
-            // Handle condition branching & unchosen path skipping
             const completedNode = nodes.get(nodeId);
+
+            // Handle condition branching and unchosen path skipping.
             if (
               completedNode?.type === "condition" &&
               result.output &&
               typeof result.output.matched === "boolean"
             ) {
               const matched = result.output.matched;
+
               const outgoingEdges = options.workflow.edges.filter(
-                (e) => e.source === nodeId,
+                (edge) => edge.source === nodeId,
               );
 
               for (const edge of outgoingEdges) {
                 const edgeHandle =
                   (edge as any).sourceHandle ?? (edge as any).handle;
+
                 if (edgeHandle !== undefined && edgeHandle !== null) {
                   const shouldTakeBranch =
                     String(edgeHandle) === String(matched);
+
                   if (!shouldTakeBranch) {
                     this.skipNodeAndDownstream(
                       edge.target,
@@ -196,7 +202,32 @@ export class WorkflowRunner {
                 }
               }
             }
+
+            // Handle loop node completion and iteration setup.
+            if (
+              completedNode?.type === "loop" &&
+              result.output &&
+              Array.isArray(result.output.items)
+            ) {
+              const items = result.output.items as unknown[];
+
+              const batchSize =
+                (completedNode.config as { batchSize?: number })?.batchSize ??
+                1;
+
+              if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+                throw new Error(
+                  `Invalid batchSize configured for loop "${nodeId}".`,
+                );
+              }
+
+              console.log(
+                `Loop node "${nodeId}" processed ${items.length} items (batchSize: ${batchSize})`,
+              );
+            }
+
             break;
+          }
 
           case "FAILED":
             scheduler.markFailed(nodeId);
@@ -213,7 +244,8 @@ export class WorkflowRunner {
       }
     }
 
-    // Record nodes skipped by dependency failure propagation or condition branching.
+    // Record nodes skipped by dependency failure propagation
+    // or condition branching.
     for (const node of options.workflow.nodes) {
       if (scheduler.getStatus(node.id) === "SKIPPED") {
         if (!nodeResults[node.id]) {
@@ -243,6 +275,7 @@ export class WorkflowRunner {
     const hasFailures = Object.values(nodeResults).some(
       (result) => result.status === "FAILED",
     );
+
     const hasCancellations =
       workflowCancelled ||
       Object.values(nodeResults).some(
@@ -250,6 +283,7 @@ export class WorkflowRunner {
       );
 
     let finalStatus: ExecutionStatus = "COMPLETED";
+
     if (hasCancellations) {
       finalStatus = "CANCELLED";
     } else if (hasFailures) {
@@ -267,6 +301,7 @@ export class WorkflowRunner {
     };
   }
 
+  // Recursively skip unchosen conditional branches.
   private skipNodeAndDownstream(
     nodeId: string,
     edges: Array<{ source: string; target: string }>,
