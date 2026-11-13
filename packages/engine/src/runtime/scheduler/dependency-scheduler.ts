@@ -84,6 +84,23 @@ export class DependencyScheduler {
     this.propagateSkippedNodes();
   }
 
+  markBranchSkipped(nodeId: string): void {
+    this.assertKnownNode(nodeId);
+
+    const currentStatus = this.statuses.get(nodeId);
+
+    if (currentStatus !== undefined) {
+      if (currentStatus !== "SCHEDULED") {
+        return;
+      }
+
+      this.validateTransition(nodeId, "SKIPPED");
+    }
+
+    this.statuses.set(nodeId, "SKIPPED");
+    this.propagateSkippedNodes();
+  }
+
   getStatus(nodeId: string): SchedulerNodeStatus | undefined {
     this.assertKnownNode(nodeId);
     return this.statuses.get(nodeId);

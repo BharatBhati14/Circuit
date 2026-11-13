@@ -10,9 +10,14 @@ describe("ConditionExecutor", () => {
       id: "cond-1",
       type: "condition",
       config: {
-        field: "$.http_node.statusCode",
-        operator: "equals",
-        value: 200,
+        rules: [
+          {
+            field: "$.http_node.statusCode",
+            operator: "equals",
+            value: 200,
+          },
+        ],
+        logicalOperator: "AND",
       },
       position: { x: 0, y: 0 },
     };
@@ -34,9 +39,11 @@ describe("ConditionExecutor", () => {
     const result = await executor.execute(node, context);
 
     expect(result.status).toBe("SUCCESS");
+
     if (result.status === "SUCCESS") {
       expect(result.output.matched).toBe(true);
-      expect(result.output.resolvedValue).toBe(200);
+      expect(result.output.ruleResults).toEqual([true]);
+      expect(result.output.logicalOperator).toBe("AND");
     }
   });
 
@@ -45,9 +52,14 @@ describe("ConditionExecutor", () => {
       id: "cond-2",
       type: "condition",
       config: {
-        field: "$.data_node.count",
-        operator: "greater_than",
-        value: 10,
+        rules: [
+          {
+            field: "$.data_node.count",
+            operator: "greater_than",
+            value: 10,
+          },
+        ],
+        logicalOperator: "AND",
       },
       position: { x: 0, y: 0 },
     };
@@ -69,9 +81,11 @@ describe("ConditionExecutor", () => {
     const result = await executor.execute(node, context);
 
     expect(result.status).toBe("SUCCESS");
+
     if (result.status === "SUCCESS") {
       expect(result.output.matched).toBe(false);
-      expect(result.output.resolvedValue).toBe(5);
+      expect(result.output.ruleResults).toEqual([false]);
+      expect(result.output.logicalOperator).toBe("AND");
     }
   });
 });
